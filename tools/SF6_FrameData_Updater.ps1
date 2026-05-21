@@ -21,6 +21,10 @@
 
 Set-StrictMode -Off
 $ErrorActionPreference = "Stop"
+# Bypass execution policy for this process only — lets right-click "Run with
+# PowerShell" succeed on machines where the user-scope policy is Restricted.
+# Scope=Process means it dies with this shell and never touches system state.
+try { Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force } catch {}
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 $host.UI.RawUI.WindowTitle = "SF6 Frame Data Updater"
@@ -178,32 +182,44 @@ $rawBackup = Join-Path $OUTPUT_BASE "_fat_raw.json"
 # -- Normalize / extract moves ---------------------------------
 function ConvertTo-NormalizedMove {
     param($raw, $catName)
+    # Scalar field → string, or "-" when null/empty.
     function gs($key) {
         $v = $raw.$key
         if ($null -eq $v -or $v -eq "") { return "-" }
         return [string]$v
     }
-    $cancel = $raw.cancelsTo
-    if ($cancel -is [array]) { $cancel = $cancel -join ", " }
-    elseif ($null -eq $cancel) { $cancel = "-" }
+    # Array field → join with separator, or "-" when null/empty.
+    # FAT's current schema delivers `xx` and `extraInfo` as arrays.
+    function gsa($key, $sep) {
+        $v = $raw.$key
+        if ($null -eq $v) { return "-" }
+        if ($v -is [array]) {
+            if ($v.Count -eq 0) { return "-" }
+            return ($v -join $sep)
+        }
+        if ($v -eq "") { return "-" }
+        return [string]$v
+    }
 
     $mt = $raw.moveType
     if (-not $mt -or $mt -eq "") { $mt = $catName }
 
+    # FAT schema (2026): numCmd / plnCmd / dmg / xx / extraInfo
+    # replace the legacy input / altInput / damage / cancelsTo / notes fields.
     return [ordered]@{
         name     = gs "moveName"
-        input    = gs "input"
-        inputAlt = gs "altInput"
+        input    = gs "numCmd"
+        inputAlt = gs "plnCmd"
         startup  = gs "startup"
         active   = gs "active"
         recovery = gs "recovery"
         total    = gs "total"
         onHit    = gs "onHit"
         onBlock  = gs "onBlock"
-        damage   = gs "damage"
-        cancel   = [string]$cancel
+        damage   = gs "dmg"
+        cancel   = gsa "xx" ", "
         moveType = [string]$mt
-        notes    = gs "notes"
+        notes    = gsa "extraInfo" " | "
     }
 }
 
@@ -225,7 +241,7 @@ function Get-CharMoves {
             $moveObj = $moveProp.Value
             if ($null -eq $moveObj) { continue }
             if ($moveObj -isnot [System.Management.Automation.PSCustomObject]) { continue }
-            if (-not $moveObj.moveName -and -not $moveObj.input) { continue }
+            if (-not $moveObj.moveName -and -not $moveObj.numCmd) { continue }
             $moves.Add((ConvertTo-NormalizedMove $moveObj $catName))
         }
     }
