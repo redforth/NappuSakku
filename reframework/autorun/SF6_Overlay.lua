@@ -1,4 +1,22 @@
 -- ============================================================
+-- ── _SF6UI GLOBAL NAMESPACE (must precede all _SF6UI.* assignments) ──
+-- Holds UI theme/helpers + bundled state tables. Lives on a GLOBAL to
+-- avoid the Lua 200-file-scope-locals limit (globals don't count).
+_SF6UI = _SF6UI or {}
+_SF6UI.THEME = _SF6UI.THEME or {}
+_SF6UI.UI    = _SF6UI.UI    or {}
+_SF6UI.dbg   = _SF6UI.dbg   or {}
+_SF6UI.stick = _SF6UI.stick or {}
+_SF6UI.hud   = _SF6UI.hud   or {}
+_SF6UI.cncol = _SF6UI.cncol or {}
+-- Loaded d2d.Image handles for button glyphs (fist/foot). Populated in the
+-- d2d init callback; nil if the PNG files aren't present (code falls back
+-- to text labels). Lives on the global table so it doesn't count against
+-- the 200-local-per-function limit.
+_SF6UI.img   = _SF6UI.img   or {}
+-- Menu slide-in animation progress (0=hidden, 1=shown), per menu.
+_SF6UI.anim  = _SF6UI.anim  or { display = 0, profiles = 0, combo = 0 }
+
 --  SF6 Overlay - Phase 2 (d2d version)
 --  Requires:
 --    - REFramework (dinput8.dll in SF6 game folder)
@@ -49,6 +67,7 @@ for i, n in ipairs(ROSTER) do ROSTER_INDEX[n] = i end
 
 -- ── DEFAULT CONFIG ───────────────────────────────────────────
 local cfg = {
+    config_version      = 2,       -- bump when a one-time cfg migration is added
     show_overlay        = true,
     show_button_bar     = true,
     show_ticks          = true,
@@ -56,11 +75,11 @@ local cfg = {
     show_ticker         = true,
     show_p1_profile     = true,
     show_p2_profile     = true,
-    font_size           = 24,      -- profile text
-    notes_font_size     = 20,      -- notes.json text under profile
-    ticker_font_size    = 28,
-    button_font_size    = 20,
-    menu_font_size      = 20,
+    font_size           = 24,      -- profile text  (primary body)
+    notes_font_size     = 18,      -- notes.json text under profile (secondary body)
+    ticker_font_size    = 28,      -- combo ticker (largest — glanceable HUD)
+    button_font_size    = 18,      -- button-bar labels
+    menu_font_size      = 16,      -- settings menu (smallest — dense text)
     font_color          = { 1.0, 1.0, 1.0, 1.0 },
     ticker_text         = "Edit this message in Settings",
     offset_y            = 0,
@@ -213,6 +232,17 @@ local function load_config()
         local ok, parsed = pcall(json.load_string, raw)
         if ok and parsed then
             for k, v in pairs(parsed) do cfg[k] = v end
+            -- One-time type-scale migration: pull font sizes onto the
+            -- 16/18/24/28 ratio ladder. Gated by config_version so it runs
+            -- exactly once and never stomps sizes the user sets afterward.
+            if (cfg.config_version or 1) < 2 then
+                cfg.menu_font_size   = 16
+                cfg.button_font_size = 18
+                cfg.notes_font_size  = 18
+                cfg.font_size        = 24
+                cfg.ticker_font_size = 28
+                cfg.config_version   = 2
+            end
         end
     end
     for _, name in ipairs(ROSTER) do
@@ -297,6 +327,7 @@ local function init_colors()
     C_VALUE        = argb(1.0, 1.0, 0.5, 1.0)
     C_CHECKBOX_BG  = argb(0.05, 0.05, 0.05, 1.0)
     C_CHECKBOX_ON  = argb(0.3, 1.0, 0.4, 1.0)
+    _SF6UI.THEME.init()   -- build theme palette (kept in sync with C_* colors)
 end
 
 -- ── GAME DATA (character detection) ──────────────────────────
@@ -696,14 +727,14 @@ end
 -- Diagonal threshold is independent and slightly lower (0.4) so QCF
 -- motions on a stick still hit the 3 (down-forward) detent reliably
 -- without requiring the player to push it fully into the corner.
-local STICK_DEAD     = 0.5
-local STICK_DEAD_DIAG = 0.4
+_SF6UI.stick.STICK_DEAD     = 0.5
+_SF6UI.stick.STICK_DEAD_DIAG = 0.4
 
 -- Y-axis sign: in SF6 / RE Engine the convention has been observed to
 -- be positive Y = up (matches OpenGL/3D math convention). If the game
 -- reads inverted on your build, flip this to -1 and the directional
 -- math below auto-adjusts. Most users won't need to touch this.
-local STICK_Y_SIGN = 1
+_SF6UI.stick.STICK_Y_SIGN = 1
 
 -- Read the left analog stick and return four booleans (up/down/left/
 -- right) plus a fifth flag indicating whether any cardinal is strong
@@ -729,13 +760,13 @@ local function read_stick_cardinals()
         return axis.x or 0, axis.y or 0
     end)
     if not ok then return false,false,false,false, false,false,false,false end
-    local y_eff = (y or 0) * STICK_Y_SIGN
+    local y_eff = (y or 0) * _SF6UI.stick.STICK_Y_SIGN
     local x_eff = x or 0
     return
-        y_eff >  STICK_DEAD_DIAG, y_eff < -STICK_DEAD_DIAG,
-        x_eff < -STICK_DEAD_DIAG, x_eff >  STICK_DEAD_DIAG,
-        y_eff >  STICK_DEAD,      y_eff < -STICK_DEAD,
-        x_eff < -STICK_DEAD,      x_eff >  STICK_DEAD
+        y_eff >  _SF6UI.stick.STICK_DEAD_DIAG, y_eff < -_SF6UI.stick.STICK_DEAD_DIAG,
+        x_eff < -_SF6UI.stick.STICK_DEAD_DIAG, x_eff >  _SF6UI.stick.STICK_DEAD_DIAG,
+        y_eff >  _SF6UI.stick.STICK_DEAD,      y_eff < -_SF6UI.stick.STICK_DEAD,
+        x_eff < -_SF6UI.stick.STICK_DEAD,      x_eff >  _SF6UI.stick.STICK_DEAD
 end
 
 -- Read the left analog stick as a numpad direction (1-9, or nil if
@@ -797,10 +828,10 @@ local frames_since_up = 0
 
 -- Side tracking: true when P1 is on the right side (facing left)
 local p1_facing_left = false
-local dbg_p1x, dbg_p2x = nil, nil
-local dbg_p1y = nil
-local dbg_p1z = nil
-local dbg_fields = {}
+_SF6UI.dbg.dbg_p1x, _SF6UI.dbg.dbg_p2x = nil, nil
+_SF6UI.dbg.dbg_p1y = nil
+_SF6UI.dbg.dbg_p1z = nil
+_SF6UI.dbg.dbg_fields = {}
 local GROUND_Y_THRESHOLD = 0.1  -- Y above this = airborne; tuned after you report values
 
 -- Previous button states for edge detection
@@ -1131,8 +1162,8 @@ local function update_dir_buffer(frame)
     -- Per-frame stance tracking (timeout, frame counter)
     update_stance_state(players[1] and players[1].name or "?")
     -- Track airborne state: prefer Y-position, fall back to input-based tracking
-    if dbg_p1y then
-        is_airborne = (dbg_p1y > GROUND_Y_THRESHOLD)
+    if _SF6UI.dbg.dbg_p1y then
+        is_airborne = (_SF6UI.dbg.dbg_p1y > GROUND_Y_THRESHOLD)
     else
         if dir == 7 or dir == 8 or dir == 9 then
             is_airborne = true
@@ -2192,7 +2223,7 @@ local function update_players_inner()
                 end
             end
             if x then
-                if slot == 1 then p1x = tonumber(x); dbg_p1x = p1x else p2x = tonumber(x); dbg_p2x = p2x end
+                if slot == 1 then p1x = tonumber(x); _SF6UI.dbg.dbg_p1x = p1x else p2x = tonumber(x); _SF6UI.dbg.dbg_p2x = p2x end
             end
         end
     end
@@ -2233,12 +2264,12 @@ local HUD = {
 -- HUD skin selection (cosmetic UI only at this stage; geometry not
 -- branched yet — adding that step later once the dropdown itself is
 -- confirmed working).
-local HUD_SKIN_ORDER = { "SF6", "SimSim", "SSF2T", "SFA3", "SF3s", "SFIV", "SFVCE" }
+_SF6UI.hud.HUD_SKIN_ORDER = { "SF6", "SimSim", "SSF2T", "SFA3", "SF3s", "SFIV", "SFVCE" }
 
 -- Pretty display names for the cycle button. Internal keys stay
 -- short for save-file stability and table-key brevity; the UI shows
 -- the longer canonical title for each game.
-local HUD_SKIN_DISPLAY = {
+_SF6UI.hud.HUD_SKIN_DISPLAY = {
     SF6    = "SF6",
     SimSim = "SimSim",
     SSF2T  = "SSF2T",
@@ -2251,7 +2282,7 @@ local HUD_SKIN_DISPLAY = {
 -- Per-skin GEOMETRY OVERRIDES. Empty table = use HUD defaults.
 -- Calibrated via SF6_Calibrate.lua; F12 prints these values.
 -- Only fields that actually differ from SF6 baseline need to be set.
-local HUD_SKIN_OVERRIDES = {
+_SF6UI.hud.HUD_SKIN_OVERRIDES = {
     SF6    = {},  -- baseline, no overrides
     SimSim = {
         bar_y_ratio = 0.0587,
@@ -2302,7 +2333,7 @@ local HUD_SKIN_OVERRIDES = {
 
 -- Per-skin TICK STYLE: "slanted" (SF6 default) or "vertical".
 -- Retro skins use vertical ticks; modern SF6 uses the angled '\' / '/' style.
-local HUD_SKIN_TICK_STYLE = {
+_SF6UI.hud.HUD_SKIN_TICK_STYLE = {
     SF6    = "slanted",
     SimSim = "vertical",
     SSF2T  = "vertical",
@@ -2316,7 +2347,7 @@ local HUD_SKIN_TICK_STYLE = {
 -- to remain readable; SF6 default keeps the established yellow ticks.
 -- Values are color-constant NAMES, resolved at draw time via
 -- tick_color() so init order doesn't matter.
-local HUD_SKIN_TICK_COLOR = {
+_SF6UI.hud.HUD_SKIN_TICK_COLOR = {
     SF6    = "yellow",
     SimSim = "blue",
     SSF2T  = "blue",
@@ -2330,7 +2361,7 @@ local HUD_SKIN_TICK_COLOR = {
 -- SF3s renders with the percentage labels ABOVE the bars because the
 -- bar sits low enough that below-labels would clash with the energy
 -- gauge / drive segments underneath.
-local HUD_SKIN_TICK_LABEL_POS = {
+_SF6UI.hud.HUD_SKIN_TICK_LABEL_POS = {
     SF6    = "below",
     SimSim = "below",
     SSF2T  = "below",
@@ -2344,29 +2375,29 @@ local HUD_SKIN_TICK_LABEL_POS = {
 -- the HUD default when the current skin has no override.
 local function hud_field(field)
     local skin = cfg.hud_skin or "SF6"
-    local override = HUD_SKIN_OVERRIDES[skin]
+    local override = _SF6UI.hud.HUD_SKIN_OVERRIDES[skin]
     if override and override[field] ~= nil then return override[field] end
     return HUD[field]
 end
 
 local function hud_tick_style()
-    return HUD_SKIN_TICK_STYLE[cfg.hud_skin or "SF6"] or "slanted"
+    return _SF6UI.hud.HUD_SKIN_TICK_STYLE[cfg.hud_skin or "SF6"] or "slanted"
 end
 
 -- Resolve to actual color constant (lazy lookup so colors don't have
 -- to be initialized before this module runs).
 local function tick_color()
-    local name = HUD_SKIN_TICK_COLOR[cfg.hud_skin or "SF6"] or "yellow"
+    local name = _SF6UI.hud.HUD_SKIN_TICK_COLOR[cfg.hud_skin or "SF6"] or "yellow"
     if name == "blue" then return C_TICK_BLUE end
     return C_TICK
 end
 
 local function tick_label_pos()
-    return HUD_SKIN_TICK_LABEL_POS[cfg.hud_skin or "SF6"] or "below"
+    return _SF6UI.hud.HUD_SKIN_TICK_LABEL_POS[cfg.hud_skin or "SF6"] or "below"
 end
 
 local function hud_skin_index(name)
-    for i, n in ipairs(HUD_SKIN_ORDER) do
+    for i, n in ipairs(_SF6UI.hud.HUD_SKIN_ORDER) do
         if n == name then return i end
     end
     return 1
@@ -2754,12 +2785,12 @@ local CN_BTN_COLORS = {
     DI    = 0xFFEC4899,   -- magenta (Drive Impact)
     DP    = 0xFF06B6D4,   -- teal (Drive Parry)
 }
-local CN_BTN_TEXT   = 0xFFFFFFFF
-local CN_DIR_BG     = 0xFF252535
-local CN_DIR_HOVER  = 0xFF3A3A55
-local CN_DIR_BORDER = 0xFF5555AA
-local CN_DIR_TEXT   = 0xFFE0E0E0
-local CN_CANCEL_COL = 0xFFAAAAAA
+_SF6UI.cncol.CN_BTN_TEXT   = 0xFFFFFFFF
+_SF6UI.cncol.CN_DIR_BG     = 0xFF252535
+_SF6UI.cncol.CN_DIR_HOVER  = 0xFF3A3A55
+_SF6UI.cncol.CN_DIR_BORDER = 0xFF5555AA
+_SF6UI.cncol.CN_DIR_TEXT   = 0xFFE0E0E0
+_SF6UI.cncol.CN_CANCEL_COL = 0xFFAAAAAA
 
 -- Button bar last positions (set during d2d draw, used for menu anchors)
 local btn_x = {0, 0, 0}
@@ -2820,6 +2851,329 @@ local function click_in(x, y, w, h)
     return false
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+--  SF6 OVERLAY - UI THEME & HELPERS  (additive; no menu is restyled yet)
+--  Inserted after click_in() so hit_rect/click_in are in scope.
+--  ZERO file-scope local slots used: the script is at the Lua 200-active-
+--  locals limit, so THEME and UI live on a single GLOBAL namespace table
+--  (_SF6UI). Globals do not count against the 200 limit.
+--  Rollback: delete this block + the one _SF6UI.THEME.init() call added to
+--  init_colors(). No existing C_* constant or feature logic is touched.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+function _SF6UI.THEME.init()
+    local T = _SF6UI.THEME
+    -- argb(r, g, b, a) — RED first, ALPHA last. Palette: deep near-black
+    -- surfaces with a violet/purple accent, white text, soft white values.
+    -- Tuned to read "premium game menu" on a bright SF6 scene.
+
+    -- ── GLASS transparency knob ───────────────────────────────────
+    -- Master control for the "glass" look. 1.00 = fully opaque (original),
+    -- lower = more see-through. NOTE: d2d can't BLUR what's behind the
+    -- panel, so this is tinted/translucent ("smoked acrylic"), not true
+    -- frosted glass. Lower it for more transparency; raise toward 1.0 if
+    -- the busy fight scene behind makes text hard to read.
+    T.GLASS           = 0.82
+    local g = T.GLASS
+
+    -- Panel surfaces (r, g, b, a). Alpha scaled by the glass knob so the
+    -- whole menu's transparency is controlled from one place. Title bar
+    -- kept a touch more opaque (it carries the title text).
+    T.panel_bg        = argb(0.05, 0.05, 0.08, g)
+    T.panel_bg_inner  = argb(0.09, 0.09, 0.13, g - 0.04)
+    T.panel_shadow    = argb(0.00, 0.00, 0.00, 0.45 * g)
+    T.panel_border    = argb(0.45, 0.40, 0.70, 0.45)   -- faint violet edge
+    T.panel_highlight = argb(1.00, 1.00, 1.00, 0.10)   -- top "light catch"
+    -- Title bar (gradient faked in draw via 3 stops; these are the ends).
+    -- Slightly more opaque than the body for title-text legibility.
+    T.title_bg        = argb(0.16, 0.12, 0.28, math.min(1.0, g + 0.10))
+    T.title_bg_lo     = argb(0.10, 0.08, 0.18, math.min(1.0, g + 0.10))
+    T.title_text      = argb(0.98, 0.98, 1.00, 1.00)
+    -- Accent strips
+    T.accent_p1       = C_NAME_P1
+    T.accent_p2       = C_NAME_P2
+    T.accent_neutral  = argb(0.55, 0.42, 0.95, 1.00)   -- violet
+    T.accent_neutral2 = argb(0.40, 0.62, 0.98, 1.00)   -- blue (for gradient strip)
+    T.accent_warn     = argb(0.98, 0.70, 0.22, 1.00)
+    T.accent_ok       = argb(0.40, 0.85, 0.50, 1.00)
+    T.accent_bad      = argb(0.95, 0.36, 0.36, 1.00)
+    -- Text
+    T.text_primary    = argb(0.96, 0.96, 0.99, 1.00)
+    T.text_secondary  = argb(0.72, 0.72, 0.82, 1.00)
+    T.text_muted      = argb(0.50, 0.50, 0.60, 1.00)
+    T.text_label      = argb(0.92, 0.92, 0.97, 1.00)   -- bright label
+    T.text_value      = argb(0.97, 0.97, 1.00, 1.00)   -- white value (mockup style)
+    -- Buttons
+    T.btn_idle        = argb(0.13, 0.13, 0.19, 0.96)
+    T.btn_hover       = argb(0.24, 0.20, 0.40, 0.98)
+    T.btn_active      = argb(0.52, 0.38, 0.92, 1.00)   -- violet (Save button)
+    T.btn_border      = argb(0.42, 0.40, 0.62, 0.50)
+    T.btn_border_hi   = argb(0.68, 0.58, 0.98, 0.80)
+    T.btn_text        = argb(0.98, 0.98, 1.00, 1.00)
+    T.btn_text_dim    = argb(0.72, 0.72, 0.80, 1.00)
+    -- Dividers
+    T.divider         = argb(0.55, 0.50, 0.75, 0.20)
+    T.divider_strong  = argb(0.60, 0.54, 0.82, 0.38)
+    -- Layout tokens (UNCHANGED — geometry stays put)
+    T.PAD             = 12
+    T.PAD_TIGHT       = 6
+    T.ROW_H           = 28
+    T.BTN_H           = 26
+    T.TITLE_H         = 28
+    T.ACCENT_H        = 3
+    T.SHADOW_OFFSET   = 3
+    T.CHAMFER         = 6   -- (legacy, unused now that real rounded rects exist)
+    T.RADIUS          = 10  -- real corner radius for fill_rounded_rect
+    -- Control tokens
+    T.toggle_off_bg   = argb(0.16, 0.16, 0.22, 0.90)   -- track, off
+    T.toggle_on_bg    = argb(0.55, 0.40, 0.95, 1.00)   -- track, on (violet)
+    T.toggle_on_glow  = argb(0.55, 0.40, 0.95, 0.30)   -- glow halo behind on-track
+    T.toggle_knob     = argb(0.99, 0.99, 1.00, 1.00)   -- white knob (on)
+    T.toggle_knob_off = argb(0.60, 0.60, 0.70, 1.00)   -- gray knob (off)
+    T.pill_arrow_bg   = argb(0.18, 0.16, 0.28, 0.92)   -- ‹ › chip idle
+    T.pill_arrow_hi   = argb(0.40, 0.30, 0.70, 1.00)   -- ‹ › chip hovered
+    T.pill_arrow_txt  = argb(0.80, 0.74, 1.00, 1.00)   -- arrow glyph (violet-white)
+    T.pill_value_bg   = argb(0.11, 0.10, 0.17, 0.94)   -- value chip bg
+    T.row_hover       = argb(0.45, 0.35, 0.80, 0.16)   -- subtle violet wash
+    T.row_active_bg   = argb(0.40, 0.32, 0.70, 0.14)   -- tint behind an ON row
+end
+
+-- panel(x,y,w,h, accent|nil): shadow -> body -> accent strip -> sheen -> border
+function _SF6UI.UI.panel(x, y, w, h, accent)
+    local T = _SF6UI.THEME
+    local SH = T.SHADOW_OFFSET
+    d2d.fill_rect(x + SH, y + SH, w, h, T.panel_shadow)
+    d2d.fill_rect(x, y, w, h, T.panel_bg)
+    if accent then d2d.fill_rect(x, y, w, T.ACCENT_H, accent) end
+    local hy = y + (accent and T.ACCENT_H or 0)
+    d2d.fill_rect(x, hy, w, 1, T.panel_highlight)
+    d2d.outline_rect(x, y, w, h, 1, T.panel_border)
+end
+
+-- chamfer_body(x,y,w,h, col): opaque body rect with beveled (stepped)
+-- corners. d2d can't cut to transparent over the game scene, so the bevel
+-- is built from horizontal strips: the top CHAMFER rows and bottom CHAMFER
+-- rows are inset by a growing amount, producing a 45° stepped corner.
+-- Cost: 1 center rect + 2*CHAMFER thin strips (CHAMFER is small, ~6).
+function _SF6UI.UI.chamfer_body(x, y, w, h, col)
+    local c = _SF6UI.THEME.CHAMFER
+    if c < 1 then d2d.fill_rect(x, y, w, h, col); return end
+    -- Center block (full width), spanning everything except the top/bottom
+    -- chamfer bands.
+    d2d.fill_rect(x, y + c, w, h - 2 * c, col)
+    -- Top + bottom bands: each row i (0..c-1) is inset by (c - i) on both
+    -- sides, so the corner steps inward toward the top/bottom edge.
+    for i = 0, c - 1 do
+        local inset = c - i
+        -- top band row
+        d2d.fill_rect(x + inset, y + i, w - 2 * inset, 1, col)
+        -- bottom band row
+        d2d.fill_rect(x + inset, y + h - 1 - i, w - 2 * inset, 1, col)
+    end
+end
+
+-- chamfer_border(x,y,w,h, thick, col): 1px-ish border following the same
+-- chamfered outline. Drawn as 4 straight edges (inset by chamfer at their
+-- ends) plus 4 short diagonal step runs at the corners.
+function _SF6UI.UI.chamfer_border(x, y, w, h, thick, col)
+    local c = _SF6UI.THEME.CHAMFER
+    thick = thick or 1
+    if c < 1 then d2d.outline_rect(x, y, w, h, thick, col); return end
+    -- Straight edges (shortened by chamfer at both ends)
+    d2d.fill_rect(x + c, y, w - 2 * c, thick, col)                 -- top
+    d2d.fill_rect(x + c, y + h - thick, w - 2 * c, thick, col)     -- bottom
+    d2d.fill_rect(x, y + c, thick, h - 2 * c, col)                 -- left
+    d2d.fill_rect(x + w - thick, y + c, thick, h - 2 * c, col)     -- right
+    -- Corner step runs (one short rect per step, 45°)
+    for i = 0, c - 1 do
+        local d = c - i
+        -- top-left
+        d2d.fill_rect(x + d - 1, y + i, thick, thick, col)
+        -- top-right
+        d2d.fill_rect(x + w - d, y + i, thick, thick, col)
+        -- bottom-left
+        d2d.fill_rect(x + d - 1, y + h - 1 - i, thick, thick, col)
+        -- bottom-right
+        d2d.fill_rect(x + w - d, y + h - 1 - i, thick, thick, col)
+    end
+end
+
+-- anim_step(key, open): advance the slide progress for menu `key` toward 1
+-- when `open` is true, toward 0 otherwise. Fixed per-frame step (~6 frames
+-- to fully open at 60fps). Returns the new progress (0..1). Clamped, so it
+-- self-corrects regardless of frame rate. Zero per-frame state beyond the
+-- _SF6UI.anim table.
+function _SF6UI.UI.anim_step(key, open)
+    local a = _SF6UI.anim
+    local p = a[key] or 0
+    local STEP = 0.16   -- ~6 frames open/close
+    if open then
+        p = p + STEP; if p > 1 then p = 1 end
+    else
+        p = p - STEP; if p < 0 then p = 0 end
+    end
+    a[key] = p
+    return p
+end
+
+-- ease_out(t): cubic ease-out for 0..1 → 0..1. Makes the slide decelerate
+-- into place instead of moving linearly (feels less mechanical).
+function _SF6UI.UI.ease_out(t)
+    local inv = 1 - t
+    return 1 - inv * inv * inv
+end
+
+-- brighten(argb_color, amount): lighten an ARGB color by `amount` (0..255)
+-- per RGB channel, CLAMPED so channels can't overflow into adjacent bytes
+-- (a naive `color + 0x202020` corrupts the color when any channel > 0xFF).
+-- Alpha is preserved.
+function _SF6UI.UI.brighten(c, amt)
+    local a = math.floor(c / 0x1000000) % 0x100
+    local r = math.floor(c / 0x10000)   % 0x100
+    local g = math.floor(c / 0x100)     % 0x100
+    local b = c % 0x100
+    r = math.min(255, r + amt)
+    g = math.min(255, g + amt)
+    b = math.min(255, b + amt)
+    return a * 0x1000000 + r * 0x10000 + g * 0x100 + b
+end
+
+-- arcade_button(cx, cy, r, fill, hovered, [gloss_scale]): draws a convex
+-- Sanwa-style arcade button as layered circles + an oval gloss + a specular
+-- dot. gloss_scale (default 1.0) scales the gloss + specular alpha down —
+-- pass a lower value (e.g. 0.4) for buttons with a white icon on top, so the
+-- highlight doesn't wash the icon out. Layers:
+--   1. drop shadow  2. dark base ring  3. colored dome
+--   4. rim light    5. gloss ellipse   6. specular dot
+-- The caller draws the label/icon on top afterward. Pure d2d primitives.
+function _SF6UI.UI.arcade_button(cx, cy, r, fill, hovered, gloss_scale)
+    local UI = _SF6UI.UI
+    local gs = gloss_scale or 1.0
+    local dome = hovered and UI.brighten(fill, 26) or fill
+    local base = UI.darken(fill, 70)        -- dark base ring shade
+    -- 1. drop shadow
+    d2d.fill_circle(cx + 2, cy + 3, r, 0x66000000)
+    -- 2. dark base ring
+    d2d.fill_circle(cx, cy, r, base)
+    -- 3. colored dome (inset a touch so the base ring shows as a rim)
+    d2d.fill_circle(cx, cy, r - 3, dome)
+    -- 4. rim light — bright thin ring just inside the dome edge.
+    -- Build a semi-transparent bright color: take brightened RGB, force
+    -- alpha to ~0xCC (the brighten helper keeps the source's full alpha,
+    -- so we strip it and re-apply a softer one for a subtle rim).
+    local rim = _SF6UI.UI.brighten(fill, 90) % 0x1000000 + 0xCC000000
+    d2d.circle(cx, cy, r - 3, 2, rim)
+    -- 5. gloss ellipse — soft highlight near the TOP so it sits above the
+    -- centered label rather than washing over it. Alpha scaled by gloss_scale.
+    local gloss_a = math.floor(0x38 * gs)
+    d2d.fill_oval(cx, cy - math.floor(r * 0.45),
+        math.floor(r * 0.55), math.floor(r * 0.30),
+        gloss_a * 0x1000000 + 0xFFFFFF)
+    -- 6. specular dot — small bright glint, off-center upper-left (near top)
+    local spec_a = math.floor(0xAA * gs)
+    d2d.fill_oval(cx - math.floor(r * 0.32), cy - math.floor(r * 0.52),
+        math.floor(r * 0.18), math.floor(r * 0.11),
+        spec_a * 0x1000000 + 0xFFFFFF)
+end
+
+-- darken(argb_color, amt): inverse of brighten — clamped at 0.
+function _SF6UI.UI.darken(c, amt)
+    local a = math.floor(c / 0x1000000) % 0x100
+    local r = math.floor(c / 0x10000)   % 0x100
+    local g = math.floor(c / 0x100)     % 0x100
+    local b = c % 0x100
+    r = math.max(0, r - amt)
+    g = math.max(0, g - amt)
+    b = math.max(0, b - amt)
+    return a * 0x1000000 + r * 0x10000 + g * 0x100 + b
+end
+
+
+-- panel_with_title(...): like panel() + a title bar; returns content-start Y
+function _SF6UI.UI.panel_with_title(x, y, w, h, title, font, accent)
+    local T = _SF6UI.THEME
+    _SF6UI.UI.panel(x, y, w, h, accent)
+    local ty = y + (accent and T.ACCENT_H or 0)
+    d2d.fill_rect(x, ty, w, T.TITLE_H, T.title_bg)
+    if font and title then
+        local _, th = font:measure(title)
+        d2d.text(font, title, x + T.PAD, ty + (T.TITLE_H - th) / 2, T.title_text)
+    end
+    d2d.fill_rect(x, ty + T.TITLE_H, w, 1, T.divider)
+    return ty + T.TITLE_H + 1
+end
+
+-- button(...): stateless. state = { active=bool, disabled=bool }. returns hovered,clicked
+function _SF6UI.UI.button(x, y, w, h, label, font, state)
+    local T = _SF6UI.THEME
+    state = state or {}
+    local hovered = (not state.disabled) and hit_rect(x, y, w, h)
+    local clicked = (not state.disabled) and click_in(x, y, w, h)
+    local bg, border, text_col
+    if state.disabled then
+        bg, border, text_col = T.btn_idle, T.btn_border, T.text_muted
+    elseif state.active then
+        bg, border, text_col = T.btn_active, T.btn_border_hi, T.btn_text
+    elseif hovered then
+        bg, border, text_col = T.btn_hover, T.btn_border_hi, T.btn_text
+    else
+        bg, border, text_col = T.btn_idle, T.btn_border, T.btn_text_dim
+    end
+    d2d.fill_rect(x + 1, y + 1, w, h, T.panel_shadow)
+    d2d.fill_rect(x, y, w, h, bg)
+    if hovered or state.active then d2d.fill_rect(x, y, w, 1, T.btn_border_hi) end
+    d2d.outline_rect(x, y, w, h, 1, border)
+    if font and label and label ~= "" then
+        local tw, th = font:measure(label)
+        d2d.text(font, label, x + (w - tw) / 2, y + (h - th) / 2, text_col)
+    end
+    return hovered, clicked
+end
+
+-- section_label(x,y,w,text,font): small header + hairline rule to the right
+function _SF6UI.UI.section_label(x, y, w, text, font)
+    local T = _SF6UI.THEME
+    if font and text then
+        local tw, th = font:measure(text)
+        d2d.text(font, text, x, y, T.text_secondary)
+        local rule_x = x + tw + 8
+        local rule_w = (x + w) - rule_x
+        if rule_w > 0 then d2d.fill_rect(rule_x, y + th / 2, rule_w, 1, T.divider) end
+    end
+end
+
+-- divider(x,y,w,strong?)
+function _SF6UI.UI.divider(x, y, w, strong)
+    local T = _SF6UI.THEME
+    d2d.fill_rect(x, y, w, 1, strong and T.divider_strong or T.divider)
+end
+
+-- status_dot(x,y,size,kind): kind = "ok"|"warn"|"bad"|"neutral"
+function _SF6UI.UI.status_dot(x, y, size, kind)
+    local T = _SF6UI.THEME
+    local col = T.accent_neutral
+    if     kind == "ok"   then col = T.accent_ok
+    elseif kind == "warn" then col = T.accent_warn
+    elseif kind == "bad"  then col = T.accent_bad end
+    d2d.fill_rect(x, y, size, size, col)
+    d2d.outline_rect(x, y, size, size, 1, T.panel_border)
+end
+
+-- kv_row(x,y,w,label,value,font): "Label .... Value", value right-aligned
+function _SF6UI.UI.kv_row(x, y, w, label, value, font)
+    local T = _SF6UI.THEME
+    if not font then return end
+    d2d.text(font, label or "", x, y, T.text_label)
+    if value then
+        local vw, _ = font:measure(value)
+        d2d.text(font, value, x + w - vw, y, T.text_value)
+    end
+end
+-- ═══════════════════════════════════════════════════════════════════════════
+--  END UI THEME & HELPERS
+-- ═══════════════════════════════════════════════════════════════════════════
+
+
 -- Font size presets - shared by profile text AND ticker.
 -- ALL sizes get preloaded at startup so switching is instant
 -- (no need to Reset Scripts anymore).
@@ -2856,6 +3210,15 @@ d2d.register(function()
         fonts_bold[s]   = d2d.Font.new("Consolas", s, true,  false)
     end
     -- Combo ticker fonts rebuilt per-frame when scale changes (see draw callback)
+
+    -- Button glyph icons (fist = punch, foot = kick). Loaded from
+    -- <gamedir>/reframework/images/. Wrapped in pcall so a missing file
+    -- can't break init — if either fails to load it stays nil and the
+    -- button drawing falls back to the "P"/"K" text label.
+    _SF6UI.img.fist = nil
+    _SF6UI.img.foot = nil
+    pcall(function() _SF6UI.img.fist = d2d.Image.new("fist.png") end)
+    pcall(function() _SF6UI.img.foot = d2d.Image.new("foot.png") end)
 end,
 
 function()
@@ -2922,17 +3285,17 @@ function()
                 local w = widths[i]
                 btn_x[i] = x
                 btn_w[i] = w
-                local hovered = hit_rect(x, y, w, h)
-                local bg = C_BTN_BG
-                if is_open[i]   then bg = C_BTN_ACTIVE
-                elseif hovered  then bg = C_BTN_HOVER end
-                d2d.fill_rect(x, y, w, h, bg)
-                d2d.outline_rect(x, y, w, h, 1, C_BTN_BORDER)
-                local tw, th = font_button:measure(label)
-                d2d.text(font_button, label,
-                    x + (w - tw)/2, y + (h - th)/2, C_BTN_TEXT)
+                -- Styled button: shadow + state-based bg + sheen-on-active.
+                -- UI.button does its own hit_rect/click_in internally and
+                -- returns (hovered, clicked). active=open highlights it.
+                local _, clicked = _SF6UI.UI.button(
+                    x, y, w, h, label, font_button,
+                    { active = is_open[i] })
 
-                if click_in(x, y, w, h) then
+                if clicked then
+                    -- Opening either top-level tab closes the Combo Notes
+                    -- sub-window so panels never overlap.
+                    show_combo_notes_win = false
                     if i == 1 then
                         show_display_win = not show_display_win
                         show_settings_win = false; show_profiles_win = false
@@ -2985,6 +3348,11 @@ function()
                             local SC        = cfg.ticker_scale or 1.0
                             local TICKER_H    = math.floor(28  * SC)
                             local TICKER_GAP  = math.floor(3   * SC)
+                            -- INSET: margin from each screen edge so the ticker reads
+                            -- as a floating panel (with real left/right edges for the
+                            -- shadow/sheen to work against) instead of a full-bleed
+                            -- strip. Set to 0 to restore the original full-width bar.
+                            local INSET       = math.floor(24  * SC)
                             local PAD_X       = math.floor(20  * SC)
                             -- NAME_W: width reserved for the slot title column.
                             -- Reduced from 125*SC to 90*SC — titles like
@@ -3014,6 +3382,9 @@ function()
                             -- Colors
                             local TC_BG     = 0xC80C0C0E
                             local TC_BORDER = 0x14FFFFFF
+                            local TC_SHADOW = 0x50000000   -- soft ambient halo (depth)
+                            local TC_TOPHI  = 0x1EFFFFFF   -- 1px top "light catch"
+                            local TC_RING   = 0x3CFFFFFF   -- panel border ring (visible)
                             local TC_NAME   = 0xB2FFFFFF
                             local TC_DIR    = 0xB2FFFFFF
                             local TC_DIVIDER= 0x19FFFFFF
@@ -3415,8 +3786,12 @@ function()
                                 local seq = tokens_to_seq(slot.tokens)
                                 slot_seq[i] = seq
                                 -- Probe input width — must match input_x below.
-                                local probe_x = PAD_X + NAME_W + NAME_PAD + 3
-                                local probe_w = sw - probe_x - PAD_X
+                                -- Both derive from the inset bar (BAR_X/BAR_W) so the
+                                -- measured wrap-line count matches what draw produces.
+                                local probe_bar_x = INSET
+                                local probe_bar_w = sw - INSET * 2
+                                local probe_x = probe_bar_x + PAD_X + NAME_W + NAME_PAD + 3
+                                local probe_w = (probe_bar_x + probe_bar_w) - probe_x - PAD_X
                                 local lines = measure_seq_lines(probe_x, probe_w, TICKER_H, seq)
                                 slot_lines[i] = lines
                                 total_h = total_h + TICKER_H * lines
@@ -3431,14 +3806,28 @@ function()
                                 local bar_h    = TICKER_H * lines
                                 local ty       = cursor_y
 
-                                d2d.fill_rect(0, ty, sw, bar_h, TC_BG)
-                                d2d.outline_rect(0, ty, sw, bar_h, 1, TC_BORDER)
+                                -- Inset floating panel with real edges, so the depth
+                                -- cues (shadow drop + top sheen) have left/right borders
+                                -- to register against. BAR_X/BAR_W define the panel; all
+                                -- interior content is offset from BAR_X (was screen 0).
+                                local bx = INSET
+                                local bw = sw - INSET * 2
+                                local rad = math.floor(8 * SC)
+                                local sh  = math.max(2, math.floor(3 * SC))
+                                -- Layered depth: drop shadow -> border ring -> body -> top sheen.
+                                -- Border ring = a slightly larger rounded fill behind the
+                                -- body (outline_rounded_rect is unverified in this d2d build;
+                                -- fill_rounded_rect is proven, so we composite instead).
+                                d2d.fill_rounded_rect(bx + sh, ty + sh, bw, bar_h, rad, rad, TC_SHADOW)
+                                d2d.fill_rounded_rect(bx - 1, ty - 1, bw + 2, bar_h + 2, rad + 1, rad + 1, TC_RING)
+                                d2d.fill_rounded_rect(bx, ty, bw, bar_h, rad, rad, TC_BG)
+                                d2d.fill_rect(bx + rad, ty + 1, bw - rad*2, 1, TC_TOPHI)
 
                                 -- Name column (left). Anchored in the FIRST line
                                 -- so it sits at the top when content wraps. The ':'
                                 -- suffix acts as the visual separator between title
                                 -- and inputs (in addition to the divider line).
-                                local name_x = PAD_X
+                                local name_x = bx + PAD_X
                                 local div_l  = name_x + NAME_W + NAME_PAD
                                 local title  = title_for(slot, i)
                                 if font_ticker_name then
@@ -3450,7 +3839,7 @@ function()
 
                                 -- Input sequence (middle, full remaining width).
                                 local input_x = div_l + 3
-                                local input_w = sw - input_x - PAD_X
+                                local input_w = (bx + bw) - input_x - PAD_X
                                 draw_seq(input_x, ty, input_w, TICKER_H, seq)
 
                                 cursor_y = cursor_y + bar_h + TICKER_GAP
@@ -4072,46 +4461,148 @@ function()
         local row_h = cfg.menu_font_size + 8
 
         local function draw_menu_panel(x, y, w, h, title)
-            d2d.fill_rect(x, y, w, h, C_MENU_BG)
-            d2d.outline_rect(x, y, w, h, 1, C_MENU_BORDER)
+            local T = _SF6UI.THEME
+            local r = T.RADIUS
+            -- Drop shadow (rounded, offset) — real soft-cornered shadow.
+            d2d.fill_rounded_rect(x + T.SHADOW_OFFSET, y + T.SHADOW_OFFSET,
+                w, h, r, r, T.panel_shadow)
+            -- Body — real anti-aliased rounded rectangle.
+            d2d.fill_rounded_rect(x, y, w, h, r, r, T.panel_bg)
+            -- Top accent strip — gradient violet→blue→violet. Drawn as a
+            -- rounded rect so its top corners match the panel; thin height.
+            local seg = (w - r*2) / 3
+            d2d.fill_rect(x + r,         y, seg+1, T.ACCENT_H, T.accent_neutral)
+            d2d.fill_rect(x + r + seg,   y, seg+1, T.ACCENT_H, T.accent_neutral2)
+            d2d.fill_rect(x + r + seg*2, y, seg+1, T.ACCENT_H, T.accent_neutral)
+            -- Border — real rounded outline.
+            d2d.rounded_rect(x, y, w, h, r, r, 1, T.panel_border)
             if title then
+                -- Title bar: faked vertical gradient (3 bands). Inset by the
+                -- radius so it doesn't poke past the rounded corners. Height
+                -- unchanged (menu_font_size + 8) so caller row math holds.
                 local th = cfg.menu_font_size + 8
-                d2d.fill_rect(x, y, w, th, C_MENU_TITLE_BG)
+                local bar_y = y + T.ACCENT_H
+                local bar_h = th - T.ACCENT_H
+                local band = bar_h / 3
+                d2d.fill_rect(x + r, bar_y,          w - 2*r, band+1, T.title_bg)
+                d2d.fill_rect(x + r, bar_y + band,   w - 2*r, band+1,
+                    argb(0.13, 0.10, 0.23, 1.00))
+                d2d.fill_rect(x + r, bar_y + band*2, w - 2*r, band+1, T.title_bg_lo)
                 d2d.text(font_menu_title, title,
-                    x + 8, y + 2, C_MENU_TITLE)
+                    x + T.PAD, y + T.ACCENT_H + 2, T.title_text)
+                -- Divider under title (real line, inset to the rounded sides)
+                d2d.line(x + r, y + th, x + w - r, y + th, 1, T.divider)
             end
         end
 
         local function row_checkbox(x, y, w, label, state)
+            local T = _SF6UI.THEME
             local hovered = hit_rect(x, y, w, row_h)
-            if hovered then d2d.fill_rect(x, y, w, row_h, C_ROW_HOVER) end
-            local bs = cfg.menu_font_size - 2
-            local bx = x + 6
-            local by = y + (row_h - bs) / 2
-            d2d.fill_rect(bx, by, bs, bs, C_CHECKBOX_BG)
-            d2d.outline_rect(bx, by, bs, bs, 1, C_BTN_BORDER)
+            -- Active-row tint: faint violet wash behind a row whose toggle is
+            -- ON (mockup style). Drawn first so hover can layer over it.
+            if state then d2d.fill_rect(x, y, w, row_h, T.row_active_bg) end
+            if hovered then d2d.fill_rect(x, y, w, row_h, T.row_hover) end
+            -- Toggle switch on the RIGHT — real capsule pill + round knob.
+            local sw_h = math.max(14, math.floor(row_h * 0.55))
+            local sw_w = sw_h * 2                       -- 2:1 switch shape
+            local sw_x = x + w - sw_w - 10
+            local sw_y = y + (row_h - sw_h) / 2
+            local cap  = sw_h / 2                        -- full pill radius
+            local track = state and T.toggle_on_bg or T.toggle_off_bg
+            -- Glow halo behind the track when ON — real rounded rect, soft.
             if state then
-                d2d.fill_rect(bx+3, by+3, bs-6, bs-6, C_CHECKBOX_ON)
+                d2d.fill_rounded_rect(sw_x-4, sw_y-4, sw_w+8, sw_h+8,
+                    cap+4, cap+4, T.toggle_on_glow)
             end
+            -- Capsule track (radius = half height → true pill ends)
+            d2d.fill_rounded_rect(sw_x, sw_y, sw_w, sw_h, cap, cap, track)
+            d2d.rounded_rect(sw_x, sw_y, sw_w, sw_h, cap, cap, 1, T.panel_border)
+            -- Round knob (real circle), centered vertically, slides L↔R
+            local kr = cap - 2
+            local kcx = state and (sw_x + sw_w - cap) or (sw_x + cap)
+            local kcy = sw_y + cap
+            d2d.fill_circle(kcx, kcy, kr,
+                state and T.toggle_knob or T.toggle_knob_off)
+            -- Label on the LEFT
             d2d.text(font_menu, label,
-                bx + bs + 8, y + (row_h - cfg.menu_font_size) / 2, C_LABEL)
+                x + 8, y + (row_h - cfg.menu_font_size) / 2, T.text_label)
             if click_in(x, y, w, row_h) then return not state, true end
             return state, false
         end
 
-        local function row_cycle(x, y, w, label, value_text)
+        local function row_cycle(x, y, w, label, value_text, plain_right)
+            local T = _SF6UI.THEME
             local hovered = hit_rect(x, y, w, row_h)
-            if hovered then d2d.fill_rect(x, y, w, row_h, C_ROW_HOVER) end
+            if hovered then d2d.fill_rect(x, y, w, row_h, T.row_hover) end
             local ty = y + (row_h - cfg.menu_font_size) / 2
-            d2d.text(font_menu, label, x + 6, ty, C_LABEL)
+            -- Label left
+            d2d.text(font_menu, label, x + 8, ty, T.text_label)
             local lw, _ = font_menu:measure(label)
-            d2d.text(font_menu, value_text, x + 6 + lw + 10, ty, C_VALUE)
+            local label_end = x + 8 + lw + 12   -- right edge of label + gap
+
+            if plain_right then
+                -- Caller draws its own right-side widget (color swatch).
+                d2d.text(font_menu, value_text, label_end, ty, T.text_value)
+                return click_in(x, y, w, row_h)
+            end
+
+            -- Cycle control, right-aligned: ‹  [value]  ›
+            -- Whole row is ONE click target; click always advances forward
+            -- (contract preserved — arrows are visual affordance only).
+            local chip   = math.max(16, math.floor(row_h * 0.7))
+            local vw, _  = font_menu:measure(value_text)
+            local valpad = 10
+            local gap    = 5
+            local val_w  = vw + valpad * 2
+            local rx     = x + w - 8
+            local rax    = rx - chip                 -- right arrow chip x
+            local valx   = rax - gap - val_w         -- value chip x
+            local lax    = valx - gap - chip         -- left arrow chip x
+            local cy     = y + (row_h - chip) / 2
+
+            -- COLLISION GUARD: if the left arrow would overlap the label,
+            -- the value is too wide for chip mode → fall back to plain
+            -- right-aligned value text (no chips). Prevents the
+            -- "Position:Above Frame Meter" overrun seen at 4K.
+            if lax < label_end then
+                d2d.text(font_menu, value_text, rx - vw, ty, T.text_value)
+                return click_in(x, y, w, row_h)
+            end
+
+            local lit = hovered and T.pill_arrow_hi or T.pill_arrow_bg
+            local crad = 5   -- chip corner radius
+            -- left ‹
+            d2d.fill_rounded_rect(lax, cy, chip, chip, crad, crad, lit)
+            d2d.rounded_rect(lax, cy, chip, chip, crad, crad, 1, T.panel_border)
+            d2d.text(font_menu, "<", lax + chip/2 - 4, ty, T.pill_arrow_txt)
+            -- value chip
+            d2d.fill_rounded_rect(valx, cy, val_w, chip, crad, crad, T.pill_value_bg)
+            d2d.text(font_menu, value_text, valx + valpad, ty, T.text_value)
+            -- right ›
+            d2d.fill_rounded_rect(rax, cy, chip, chip, crad, crad, lit)
+            d2d.rounded_rect(rax, cy, chip, chip, crad, crad, 1, T.panel_border)
+            d2d.text(font_menu, ">", rax + chip/2 - 4, ty, T.pill_arrow_txt)
             return click_in(x, y, w, row_h)
         end
 
         local function row_label(x, y, text, color)
             local ty = y + (row_h - cfg.menu_font_size) / 2
             d2d.text(font_menu, text, x + 6, ty, color or C_DIM)
+        end
+
+        -- section_header(x, y, w, text): small uppercase group label with a
+        -- divider rule extending to the right. Used to chunk the panel into
+        -- named sections (OVERLAY / TICKER / TEXT).
+        local function section_header(x, y, w, text)
+            local T = _SF6UI.THEME
+            local ty = y + (row_h - cfg.menu_font_size) / 2
+            d2d.text(font_menu, text, x + 6, ty, T.accent_neutral)
+            local tw, _ = font_menu:measure(text)
+            local rule_x = x + 6 + tw + 10
+            local rule_w = (x + w) - rule_x - 4
+            if rule_w > 0 then
+                d2d.fill_rect(rule_x, y + row_h/2, rule_w, 1, T.divider)
+            end
         end
 
         -- menu_button: clickable rect with hover highlight.
@@ -4122,185 +4613,268 @@ function()
         --              the currently-active option without relying on
         --              hover state.
         local function menu_button(x, y, w, h, label, color, bg_color)
+            local T = _SF6UI.THEME
             local hovered = hit_rect(x, y, w, h)
-            local bg = bg_color or C_BTN_BG
-            d2d.fill_rect(x, y, w, h, hovered and C_BTN_ACTIVE or bg)
-            d2d.outline_rect(x, y, w, h, 1, C_BTN_BORDER)
+            -- State resolution:
+            --   • bg_color passed → primary/active button; use that color,
+            --     and BRIGHTEN it on hover so it still gives feedback.
+            --   • hovered          → themed hover fill.
+            --   • otherwise         → themed idle fill.
+            local bg, border
+            if bg_color then
+                -- Brighten the forced color on hover (clamped per-channel).
+                bg     = hovered and _SF6UI.UI.brighten(bg_color, 32) or bg_color
+                border = T.btn_border_hi
+            elseif hovered then
+                bg     = T.btn_hover
+                border = T.btn_border_hi
+            else
+                bg     = T.btn_idle
+                border = T.btn_border
+            end
+
+            -- Press flash: when this button was clicked recently, overlay a
+            -- bright pulse that fades over ~10 frames. Keyed by label so each
+            -- button tracks its own flash. State lives on _SF6UI.anim.flash.
+            _SF6UI.anim.flash = _SF6UI.anim.flash or {}
+            local fl = _SF6UI.anim.flash[label] or 0
+
+            local br = 6
+            -- Glow halo for primary/active buttons (toggle-lit language).
+            if bg_color then
+                d2d.fill_rounded_rect(x-3, y-3, w+6, h+6, br+3, br+3,
+                    T.toggle_on_glow)
+            end
+            d2d.fill_rounded_rect(x + 1, y + 2, w, h, br, br, T.panel_shadow)
+            d2d.fill_rounded_rect(x, y, w, h, br, br, bg)
+            -- Flash overlay (fades 1→0). White-ish pulse on top of the body.
+            if fl > 0 then
+                local a = (fl / 10) * 0.55      -- peak ~0.55 alpha
+                d2d.fill_rounded_rect(x, y, w, h, br, br,
+                    argb(1.0, 1.0, 1.0, a))
+                _SF6UI.anim.flash[label] = fl - 1
+            end
+            d2d.rounded_rect(x, y, w, h, br, br, 1, border)
             local tw, th = font_button:measure(label)
             d2d.text(font_button, label,
                 x + (w - tw)/2, y + (h - th)/2,
-                color or C_BTN_TEXT)
-            return click_in(x, y, w, h)
+                color or T.btn_text)
+            -- On click, arm the flash for this button.
+            if click_in(x, y, w, h) then
+                _SF6UI.anim.flash[label] = 10
+                return true
+            end
+            return false
         end
 
         -- Display & Settings menu (merged)
-        if show_display_win and cfg.show_button_bar then
-            local mw = 420
-            local mh = row_h * 22 + 60
+        -- Display panel: animate slide-in/out. Draw while the flag is on OR
+        -- while the close animation is still playing (progress > 0).
+        local disp_open = show_display_win and cfg.show_button_bar
+        local disp_p = _SF6UI.UI.anim_step("display", disp_open)
+        if (disp_open or disp_p > 0.001) and cfg.show_button_bar then
+            -- Two-column wide layout. Each column has its own y-cursor.
+            local mw = 720
+            local col_gap = 16
+            local pad = 12
+            local col_w = (mw - pad*2 - col_gap) / 2   -- per-column content width
+            -- Tallest column drives panel height. Left has 6+3=9 rows + 2
+            -- headers; right has 4+6=10 rows + 2 headers. Right is tallest.
+            local max_rows = 12   -- right column: 2 headers + 10 rows
+            local mh = row_h * max_rows + row_h + 60   -- + title + button area
             local mx, my = menu_anchor(1, mw)
+            -- Slide offset: panel rises into place from ~40px below as it
+            -- opens. eased so it decelerates. At progress 1 offset is 0.
+            local slide = math.floor((1 - _SF6UI.UI.ease_out(disp_p)) * 40)
+            my = my + slide
             draw_menu_panel(mx, my, mw, mh, "Display & Settings")
 
-            local ry = my + row_h + 4
+            local colL_x = mx + pad
+            local colR_x = mx + pad + col_w + col_gap
+            local top_y  = my + row_h + 8
+            local ryL = top_y
+            local ryR = top_y
             local changed
 
-            -- ── Display toggles ───────────────────────────────
-            cfg.show_overlay, changed = row_checkbox(mx+4, ry, mw-8,
-                "Master Overlay (ticks+profiles+ticker)", cfg.show_overlay)
-            ry = ry + row_h
+            -- ════════ LEFT COLUMN ════════
+            section_header(colL_x, ryL, col_w, "OVERLAY")
+            ryL = ryL + row_h
 
-            cfg.show_ticks, changed = row_checkbox(mx+4, ry, mw-8,
-                "Health Bar Tick Marks (10%)", cfg.show_ticks)
-            ry = ry + row_h
+            cfg.show_overlay, changed = row_checkbox(colL_x, ryL, col_w,
+                "Master Overlay", cfg.show_overlay)
+            ryL = ryL + row_h
+
+            cfg.show_ticks, changed = row_checkbox(colL_x, ryL, col_w,
+                "Health Bar Ticks", cfg.show_ticks)
+            ryL = ryL + row_h
 
             local hsidx = hud_skin_index(cfg.hud_skin)
-            local hs_label = HUD_SKIN_DISPLAY[HUD_SKIN_ORDER[hsidx]]
-                          or HUD_SKIN_ORDER[hsidx]
-            if row_cycle(mx+4, ry, mw-8, "HUD Skin:", hs_label) then
-                local next_i = (hsidx % #HUD_SKIN_ORDER) + 1
-                cfg.hud_skin = HUD_SKIN_ORDER[next_i]
+            local hs_label = _SF6UI.hud.HUD_SKIN_DISPLAY[_SF6UI.hud.HUD_SKIN_ORDER[hsidx]]
+                          or _SF6UI.hud.HUD_SKIN_ORDER[hsidx]
+            if row_cycle(colL_x, ryL, col_w, "HUD Skin:", hs_label) then
+                local next_i = (hsidx % #_SF6UI.hud.HUD_SKIN_ORDER) + 1
+                cfg.hud_skin = _SF6UI.hud.HUD_SKIN_ORDER[next_i]
             end
-            ry = ry + row_h
+            ryL = ryL + row_h
 
-            cfg.show_profiles_text, changed = row_checkbox(mx+4, ry, mw-8,
-                "Character Profile Text (master)", cfg.show_profiles_text)
-            ry = ry + row_h
-
-            cfg.show_p1_profile, changed = row_checkbox(mx+4, ry, mw-8,
-                "  Show Player 1 Profile", cfg.show_p1_profile)
-            ry = ry + row_h
-
-            cfg.show_p2_profile, changed = row_checkbox(mx+4, ry, mw-8,
-                "  Show Player 2 Profile", cfg.show_p2_profile)
-            ry = ry + row_h
-
-            cfg.show_ticker, changed = row_checkbox(mx+4, ry, mw-8,
+            cfg.show_ticker, changed = row_checkbox(colL_x, ryL, col_w,
                 "Combo Ticker Bars", cfg.show_ticker)
-            ry = ry + row_h
+            ryL = ryL + row_h
 
-            cfg.numeric_notation, changed = row_checkbox(mx+4, ry, mw-8,
+            cfg.numeric_notation, changed = row_checkbox(colL_x, ryL, col_w,
                 "Numeric Notation", cfg.numeric_notation)
-            ry = ry + row_h
+            ryL = ryL + row_h
 
-            -- Ticker scale cycle: 0.75 → 1.0 → 1.25 → 1.5 → 2.0 → 2.5 → 3.0
+            ryL = ryL + row_h/2   -- gap before next section
+
+            section_header(colL_x, ryL, col_w, "PROFILE")
+            ryL = ryL + row_h
+
+            cfg.show_profiles_text, changed = row_checkbox(colL_x, ryL, col_w,
+                "Profile Text (master)", cfg.show_profiles_text)
+            ryL = ryL + row_h
+
+            cfg.show_p1_profile, changed = row_checkbox(colL_x, ryL, col_w,
+                "  Show Player 1", cfg.show_p1_profile)
+            ryL = ryL + row_h
+
+            cfg.show_p2_profile, changed = row_checkbox(colL_x, ryL, col_w,
+                "  Show Player 2", cfg.show_p2_profile)
+            ryL = ryL + row_h
+
+            -- ════════ RIGHT COLUMN ════════
+            section_header(colR_x, ryR, col_w, "TICKER")
+            ryR = ryR + row_h
+
             local SCALE_STEPS = { 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0 }
-            local scale_labels = { "Small (0.75x)", "Normal (1.0x)", "Large (1.25x)", "XL (1.5x)", "2K (2.0x)", "2.5x", "4K (3.0x)" }
+            local scale_labels = { "0.75x", "1.0x", "1.25x", "1.5x", "2.0x", "2.5x", "3.0x" }
             local cur_scale_idx = 2
             for i, v in ipairs(SCALE_STEPS) do
                 if math.abs(v - (cfg.ticker_scale or 1.0)) < 0.01 then
                     cur_scale_idx = i; break
                 end
             end
-            if row_cycle(mx+4, ry, mw-8, "Ticker Scale:", scale_labels[cur_scale_idx]) then
+            if row_cycle(colR_x, ryR, col_w, "Scale:", scale_labels[cur_scale_idx]) then
                 local next_i = (cur_scale_idx % #SCALE_STEPS) + 1
                 cfg.ticker_scale = SCALE_STEPS[next_i]
             end
-            ry = ry + row_h
+            ryR = ryR + row_h
 
-            -- Ticker vertical position. Cycle 4 named anchor points so
-            -- users don't fight a continuous slider. Each value is the
-            -- fraction of screen height from the bottom edge to the
-            -- bottom of the ticker stack.
-            --   Bottom (0.05): hugs the bottom of the screen
-            --   Default (0.11): just above the SUPER bar (original)
-            --   Above Frame Meter (0.32): clear of SF6's frame meter
-            --   Mid Screen (0.45): higher, away from gameplay HUD
             local POS_STEPS  = { 0.05, 0.11, 0.32, 0.45 }
-            local POS_LABELS = { "Bottom", "Default", "Above Frame Meter", "Mid Screen" }
-            local cur_pos_idx = 2  -- default to "Default" (0.11)
+            local POS_LABELS = { "Bottom", "Default", "Frame Meter", "Mid" }
+            local cur_pos_idx = 2
             for i, v in ipairs(POS_STEPS) do
                 if math.abs(v - (cfg.ticker_bottom_pct or 0.11)) < 0.01 then
                     cur_pos_idx = i; break
                 end
             end
-            if row_cycle(mx+4, ry, mw-8, "Ticker Position:", POS_LABELS[cur_pos_idx]) then
+            if row_cycle(colR_x, ryR, col_w, "Position:", POS_LABELS[cur_pos_idx]) then
                 local next_i = (cur_pos_idx % #POS_STEPS) + 1
                 cfg.ticker_bottom_pct = POS_STEPS[next_i]
             end
-            ry = ry + row_h
+            ryR = ryR + row_h
 
-            -- Orientation toggle: horizontal full-width bars vs vertical
-            -- trials-mode columns. When vertical, ticker_bottom_pct is
-            -- ignored (vertical anchors to top of screen instead).
             local cur_orient = cfg.ticker_orientation or "horizontal"
-            local orient_label = (cur_orient == "vertical") and "Vertical (Trials)" or "Horizontal"
-            if row_cycle(mx+4, ry, mw-8, "Ticker Orientation:", orient_label) then
+            local orient_label = (cur_orient == "vertical") and "Vertical" or "Horizontal"
+            if row_cycle(colR_x, ryR, col_w, "Orientation:", orient_label) then
                 cfg.ticker_orientation = (cur_orient == "vertical") and "horizontal" or "vertical"
             end
-            ry = ry + row_h
+            ryR = ryR + row_h
 
-            -- Vertical-mode side anchor (Left/Right). Only meaningful when
-            -- orientation=vertical, but always shown so users can pre-set it.
             local cur_side = cfg.ticker_vertical_side or "left"
             local side_label = (cur_side == "right") and "Right" or "Left"
-            if row_cycle(mx+4, ry, mw-8, "Vertical Side:", side_label) then
+            if row_cycle(colR_x, ryR, col_w, "Vertical Side:", side_label) then
                 cfg.ticker_vertical_side = (cur_side == "left") and "right" or "left"
             end
-            ry = ry + row_h
+            ryR = ryR + row_h
 
-            -- ── Profile / font settings ───────────────────────
-            if row_cycle(mx+4, ry, mw-8, "Profile Font Size:",
+            ryR = ryR + row_h/2   -- gap before next section
+
+            section_header(colR_x, ryR, col_w, "TEXT")
+            ryR = ryR + row_h
+
+            if row_cycle(colR_x, ryR, col_w, "Profile Font:",
                 tostring(cfg.font_size) .. "px") then
                 cfg.font_size = next_in_cycle(cfg.font_size, FONT_SIZES)
             end
-            ry = ry + row_h
+            ryR = ryR + row_h
 
-            if row_cycle(mx+4, ry, mw-8, "Notes Font Size:",
+            if row_cycle(colR_x, ryR, col_w, "Notes Font:",
                 tostring(cfg.notes_font_size) .. "px") then
                 cfg.notes_font_size = next_in_cycle(cfg.notes_font_size, FONT_SIZES)
             end
-            ry = ry + row_h
+            ryR = ryR + row_h
 
             local cidx2 = color_index(cfg.font_color)
-            if row_cycle(mx+4, ry, mw-8, "Profile Text Color:",
-                COLOR_PRESETS[cidx2].name) then
+            if row_cycle(colR_x, ryR, col_w, "Text Color:",
+                COLOR_PRESETS[cidx2].name, true) then
                 local next_i = (cidx2 % #COLOR_PRESETS) + 1
                 local c = COLOR_PRESETS[next_i].rgba
                 cfg.font_color = { c[1], c[2], c[3], c[4] }
                 C_TEXT = argb(c[1], c[2], c[3], c[4])
             end
-            local sw_x2 = mx + mw - 36
-            d2d.fill_rect(sw_x2, ry+4, 28, row_h-8, C_TEXT)
-            d2d.outline_rect(sw_x2, ry+4, 28, row_h-8, 1, C_BTN_BORDER)
-            ry = ry + row_h
+            local sw_x2 = colR_x + col_w - 32
+            d2d.fill_rect(sw_x2, ryR+4, 26, row_h-8, C_TEXT)
+            d2d.outline_rect(sw_x2, ryR+4, 26, row_h-8, 1, C_BTN_BORDER)
+            ryR = ryR + row_h
 
-            if row_cycle(mx+4, ry, mw-8, "Profile Text Vertical Offset:",
+            if row_cycle(colR_x, ryR, col_w, "Vert Offset:",
                 tostring(cfg.offset_y) .. "px") then
                 cfg.offset_y = cfg.offset_y + 2
                 if cfg.offset_y > 20 then cfg.offset_y = -20 end
             end
-            ry = ry + row_h
+            ryR = ryR + row_h
 
-            if row_cycle(mx+4, ry, mw-8, "Profile Text Horizontal Offset:",
+            if row_cycle(colR_x, ryR, col_w, "Horiz Offset:",
                 tostring(cfg.offset_x) .. "px") then
                 cfg.offset_x = cfg.offset_x + 4
                 if cfg.offset_x > 40 then cfg.offset_x = -40 end
             end
-            ry = ry + row_h
+            ryR = ryR + row_h
 
-            row_label(mx+4, ry, "Resolution: " .. sw .. " x " .. sh)
-            ry = ry + row_h
+            -- Resolution readout spans bottom of left column
+            row_label(colL_x, ryL + row_h/2,
+                "Resolution: " .. sw .. " x " .. sh)
 
+            -- ════════ BOTTOM BUTTONS ════════
+            -- Auto-width each button to its label (+ padding) so text never
+            -- overflows, and lay them out left-to-right with a fixed gap.
+            -- Close is pinned to the right edge.
             local bh = row_h + 4
-            ry = my + mh - bh - 6
-            if menu_button(mx+6, ry, 80, bh, "Save") then save_config() end
-            if menu_button(mx+102, ry, 120, bh, "Reset Align") then
+            local by = my + mh - bh - 8
+            local bpad = 18           -- horizontal padding inside each button
+            local bgap = 10           -- gap between buttons
+            local function btn_w(label)
+                local tw, _ = font_button:measure(label)
+                return tw + bpad * 2
+            end
+            local bx = mx + pad
+            local w_save   = btn_w("Save")
+            local w_reset  = btn_w("Reset Text Pos")
+            local w_reload = btn_w("Reload Script")
+            local w_close  = btn_w("Close")
+
+            if menu_button(bx, by, w_save, bh, "Save", nil, _SF6UI.THEME.btn_active) then save_config() end
+            bx = bx + w_save + bgap
+            if menu_button(bx, by, w_reset, bh, "Reset Text Pos") then
                 cfg.offset_x = 0; cfg.offset_y = 0; save_config()
             end
-            -- Reload script: re-runs all autorun Lua, which clears the
-            -- in-memory notes/combonotes caches and re-reads from disk.
-            -- Use after editing notes/combos in the web editor so the
-            -- overlay picks up changes without restarting the game.
-            if menu_button(mx+228, ry, 110, bh, "Reload Script") then
+            bx = bx + w_reset + bgap
+            if menu_button(bx, by, w_reload, bh, "Reload Script") then
                 save_config()
                 reframework:reset_scripts()
             end
-            if menu_button(mx+mw-86, ry, 80, bh, "Close") then
+            -- Close pinned to right edge
+            if menu_button(mx + mw - pad - w_close, by, w_close, bh, "Close") then
                 show_display_win = false
             end
         end
 
-        -- Combo Editor menu (formerly Character Profiles)
-        if show_profiles_win and not show_combo_notes_win and cfg.show_button_bar then
+        -- Combo Editor menu (formerly Character Profiles) — slide animated.
+        local prof_open = show_profiles_win and not show_combo_notes_win
+                          and cfg.show_button_bar
+        local prof_p = _SF6UI.UI.anim_step("profiles", prof_open)
+        if (prof_open or prof_p > 0.001) and cfg.show_button_bar then
             local mw = 460
             local dd_item_h  = cfg.menu_font_size + 8
             local dd_visible = 12   -- max visible rows in dropdown
@@ -4310,6 +4884,8 @@ function()
                 and (row_h * 3 + 50 + dd_list_h)
                 or  (row_h * 13 + 50)
             local mx, my = menu_anchor(2, mw)
+            local slide = math.floor((1 - _SF6UI.UI.ease_out(prof_p)) * 40)
+            my = my + slide
             local char_name = ROSTER[edit_char_idx]
             draw_menu_panel(mx, my, mw, mh,
                 "Combo Editor  [" .. char_name .. "]")
@@ -4524,7 +5100,13 @@ function()
         end
 
         -- ── COMBO NOTES INPUT BUILDER ───────────────────────────
-        if show_combo_notes_win and cfg.show_button_bar then
+        -- Slide-IN only: this window has live keyboard handlers and heavy
+        -- per-frame input state, so we keep the draw gate on the real flag
+        -- (no drawing/handling during a close-out) and only apply the
+        -- entrance slide. Stepping anim here keeps progress in sync.
+        local cn_open = show_combo_notes_win and cfg.show_button_bar
+        local cn_p = _SF6UI.UI.anim_step("combo", cn_open)
+        if cn_open then
             local char_name = ROSTER[edit_char_idx]
             local combos    = get_char_combos(char_name)
             local slot_data = combos[combo_edit_slot]
@@ -4571,16 +5153,17 @@ function()
             detect_diag.cn_slot1_toks  = combos[1] and #(combos[1].tokens or {}) or 0
 
             -- Panel dimensions — wider to fit slot list on right
-            local mw  = 1100  -- bumped from 1020 to fit new col 4 (CH/PC/SHM)
-            local mh  = 760   -- taller for more preview/notes space
+            local mw  = 1240  -- wider for breathing room between button groups
+            local mh  = 820   -- taller to space rows + preview/notes
             local mx  = math.floor((sw - mw) / 2)
             local my  = math.floor(sh * 0.06)   -- near top to fit everything
+            my = my + math.floor((1 - _SF6UI.UI.ease_out(cn_p)) * 40)  -- slide-in
             local slot_list_w = 240   -- right column: slot list
             local input_w     = mw - slot_list_w - 18  -- left column: input pad
             local cn_scheme = get_combo_scheme(char_name)
             local cn_scheme_tag = (cn_scheme == "modern") and "  [MODERN]" or "  [CLASSIC]"
             draw_menu_panel(mx, my, mw, mh,
-                "Combo Notes  [" .. char_name .. "]" .. cn_scheme_tag .. "  Editing: " ..
+                "Combo Notes v8  [" .. char_name .. "]" .. cn_scheme_tag .. "  Editing: " ..
                 combo_edit_slot .. ". " .. slot_data.title)
 
             -- Independent click state for this window so it can't be
@@ -4602,61 +5185,57 @@ function()
             end
 
             -- ── Layout geometry (left: input pad) ─────────────
-            -- Order L→R: numpad → motions (2 cols) → attacks (3 cols) → SAs (1 col)
+            -- Order L→R: numpad → ATTACKS (P/K + modifiers) → motions → SA.
+            -- Attacks sit right next to the numpad so direction+button pairs
+            -- (the core of every combo, e.g. 2+MK) are visually adjacent.
             local content_y  = my + row_h + 8
             local dir_x      = mx + 10
-            local dir_cell   = 48
-            local dir_gap    = 5
+            local dir_cell   = 52
+            local dir_gap    = 10
             local dir_pad_w  = dir_cell * 3 + dir_gap * 2
-            local MOT_GAP    = 16   -- spacing between motion cols
-            -- Motion block sits right of numpad; 3 cols wide. Col 0 is
-            -- reserved for 720 on row 5 (only); cols 1/2 hold the
-            -- traditional motion palette. This avoids wasting a 6th row
-            -- of the grid (which would push the 720 button under the
-            -- input/legend area below) while keeping the layout
-            -- visually grouped — 720 sits next to 360F/360B which is
-            -- where the user expects double-circle motions to live.
-            local mot_x      = dir_x + dir_pad_w + 18
-            local mot_block_w = dir_cell + MOT_GAP + dir_cell + MOT_GAP + dir_cell  -- 3 cols
-            -- Attacks sit right of motions.
-            local atk_x      = mot_x + mot_block_w + 18
-            local atk_cell_w = 72
-            local atk_cell_h = 48
-            local atk_gap    = 6
+            local MOT_GAP    = 22   -- spacing between motion cols
+            local GROUP_GAP  = 22   -- spacing between major button groups
+            local atk_cell_w = 76
+            local atk_cell_h = 54
+            local atk_gap    = 12
+            -- Extra vertical gap inserted between the P/K block (rows 1-2)
+            -- and the modifier rows (3+), so P/K reads as its own section.
+            -- A divider line is drawn in this gap. Modifier rows add this to
+            -- their cy; P/K rows (1-2) do not.
+            local MOD_GAP    = 22
+            -- Attack block: 4 columns (P/K in cols 1-3, CH/PC/SHM in col 4),
+            -- sits immediately right of the numpad.
+            local atk_x      = dir_x + dir_pad_w + GROUP_GAP
+            local atk_block_w = atk_cell_w * 4 + atk_gap * 3
+            -- Motion block: 3 cols, right of the attack block.
+            local mot_x      = atk_x + atk_block_w + GROUP_GAP
+            local mot_block_w = dir_cell + MOT_GAP + dir_cell + MOT_GAP + dir_cell
 
-            -- Fake-circle helper: fill a circle using concentric inset rects.
-            -- d2d has no native circle primitive; this tiles a close approximation.
+            -- Native anti-aliased circles. (Previously these faked a circle
+            -- with a per-row fill_rect scanline — ~2r+1 draw calls each, hard
+            -- stairstepped edges. The plugin provides real d2d.fill_circle /
+            -- d2d.circle, so each is now ONE smooth call.)
             local function fill_circle(cx, cy, r, color)
-                for dy = -r, r do
-                    local hw = math.floor(math.sqrt(math.max(0, r*r - dy*dy)) + 0.5)
-                    if hw > 0 then
-                        d2d.fill_rect(cx - hw, cy + dy, hw*2, 1, color)
-                    end
-                end
+                d2d.fill_circle(cx, cy, r, color)
             end
             local function outline_circle(cx, cy, r, color)
-                fill_circle(cx, cy, r, color)
-                fill_circle(cx, cy, r-2, 0xFF000000)  -- punch hole; caller draws content after
+                -- Real ring outline (replaces the old fill-then-punch-hole).
+                d2d.circle(cx, cy, r - 1, 2, color)
             end
 
             -- Helper: draw a round direction button
             local function dir_btn(col, row_i, label, token_val)
                 local cx = dir_x + (col-1)*(dir_cell + dir_gap) + dir_cell/2
                 local cy = content_y + (row_i-1)*(dir_cell + dir_gap) + dir_cell/2
-                local r  = math.floor(dir_cell/2) - 1
+                local r  = math.floor(dir_cell/2) - 4
                 local hov = hit_rect(cx-r, cy-r, r*2, r*2)
-                -- Shadow
-                fill_circle(cx+2, cy+2, r, 0x66000000)
-                -- Fill
-                fill_circle(cx, cy, r, hov and CN_DIR_HOVER or CN_DIR_BG)
-                -- Border ring (draw ring by filling outer then punching inner)
-                -- Simple approach: outline_rect on bounding box looks fine at this size
-                d2d.outline_rect(cx-r, cy-r, r*2, r*2, 1, CN_DIR_BORDER)
+                -- Convex arcade dome (direction buttons use the dir base color)
+                _SF6UI.UI.arcade_button(cx, cy, r, _SF6UI.cncol.CN_DIR_BG, hov)
                 -- Label
                 local tw, th = font_menu:measure(label)
                 d2d.text(font_menu, label,
                     cx - tw/2, cy - th/2,
-                    CN_DIR_TEXT)
+                    _SF6UI.cncol.CN_DIR_TEXT)
                 if cn_click(cx-r, cy-r, r*2, r*2) then
                     insert_at_cursor({t="dir", v=token_val})
                 end
@@ -4665,28 +5244,47 @@ function()
             -- Helper: draw a round attack button glyph
             local function atk_btn(col, row_i, label)
                 local cx = atk_x + (col-1)*(atk_cell_w + atk_gap) + atk_cell_w/2
-                local cy = content_y + (row_i-1)*(atk_cell_h + atk_gap) + atk_cell_h/2
-                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 2
+                -- Rows 3+ are the modifier section — push them down by MOD_GAP
+                -- so they sit below the P/K divider as a distinct group.
+                local mod_off = (row_i >= 3) and MOD_GAP or 0
+                local cy = content_y + (row_i-1)*(atk_cell_h + atk_gap) + atk_cell_h/2 + mod_off
+                local base_r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 6
+                -- Single-strength P/K buttons render 15% larger so the
+                -- fist/foot icons read clearly (they were barely visible at
+                -- the base size). PP/KK and modifiers keep the base size.
+                local PUNCH = {LP=true,MP=true,HP=true}
+                local KICK  = {LK=true,MK=true,HK=true}
+                local is_pk = PUNCH[label] or KICK[label]
+                local r  = is_pk and math.floor(base_r * 1.27) or base_r
                 local col_fill = CN_BTN_COLORS[label] or 0xFF666666
                 local hov = hit_rect(cx-r, cy-r, r*2, r*2)
-                -- Shadow
-                fill_circle(cx+2, cy+2, r, 0x66000000)
-                -- Main fill
-                fill_circle(cx, cy, r, hov and (col_fill + 0x00181818) or col_fill)
-                -- Top highlight arc (small bright strip near top)
-                fill_circle(cx, cy - math.floor(r*0.35), math.floor(r*0.55), 0x22FFFFFF)
-                -- Border
-                d2d.outline_rect(cx-r, cy-r, r*2, r*2, 1, 0x88FFFFFF)
-                -- Label — collapse LP/MP/HP→"P" and LK/MK/HK→"K" so the
-                -- glyph matches SF6's fist/foot button HUD style. Strength
-                -- is conveyed by color (col_fill above). Other buttons
-                -- (PP/KK/DR/DRC/MW) keep their original text label.
-                local LETTER_MAP = {LP="P",MP="P",HP="P",LK="K",MK="K",HK="K"}
-                local display = LETTER_MAP[label] or label
-                local tw, th = font_button:measure(display)
-                d2d.text(font_button, display,
-                    cx - tw/2, cy - th/2,
-                    CN_BTN_TEXT)
+                -- Convex arcade-button dome. P/K buttons carry a white icon,
+                -- so dim the gloss (0.4) on them to stop the highlight washing
+                -- the fist/foot out; other buttons keep full gloss.
+                local gloss = is_pk and 0.4 or 1.0
+                _SF6UI.UI.arcade_button(cx, cy, r, col_fill, hov, gloss)
+                -- Glyph: single-strength punch (LP/MP/HP) show the fist icon,
+                -- single-strength kick (LK/MK/HK) show the foot icon — if the
+                -- PNGs loaded. Strength is conveyed by the dome color. PP/KK
+                -- (OD) keep their TEXT label since a lone fist/foot would be
+                -- ambiguous against the single buttons. Falls back to text if
+                -- the image isn't available.
+                local icon = (PUNCH[label] and _SF6UI.img.fist)
+                          or (KICK[label]  and _SF6UI.img.foot)
+                          or nil
+                if icon then
+                    -- Icon fills ~88% of the dome diameter so it's clearly
+                    -- visible (was ~78%).
+                    local isz = math.floor(r * 1.75)
+                    d2d.image(icon, cx - isz/2, cy - isz/2, isz, isz)
+                else
+                    local LETTER_MAP = {LP="P",MP="P",HP="P",LK="K",MK="K",HK="K"}
+                    local display = LETTER_MAP[label] or label
+                    local tw, th = font_button:measure(display)
+                    d2d.text(font_button, display,
+                        cx - tw/2, cy - th/2,
+                        _SF6UI.cncol.CN_BTN_TEXT)
+                end
                 if cn_click(cx-r, cy-r, r*2, r*2) then
                     insert_at_cursor({t="btn", v=label})
                 end
@@ -4709,7 +5307,7 @@ function()
             -- to manually break the chunked-group pill backgrounds (e.g.
             -- when two separate confirms aren't logically one chunk but
             -- the auto-chunker glues them). Styling matches the `xx`
-            -- cancel button (muted background, CN_CANCEL_COL label)
+            -- cancel button (muted background, _SF6UI.cncol.CN_CANCEL_COL label)
             -- because both serve a separator/punctuation role.
             -- Width spans the full numpad (3 cells + 2 gaps); placed one
             -- row below the numpad's bottom row. The legend block starts
@@ -4728,7 +5326,7 @@ function()
                 d2d.text(font_button, ">",
                     sep_x + (sep_w - tw)/2,
                     sep_y + (sep_h - th)/2,
-                    CN_CANCEL_COL)
+                    _SF6UI.cncol.CN_CANCEL_COL)
                 if cn_click(sep_x, sep_y, sep_w, sep_h) then
                     insert_at_cursor({t="sep"})
                 end
@@ -4740,11 +5338,11 @@ function()
             -- col B (right): 214  x2   63214  [2]8  360B
             -- 360F/360B/720 skip the notation toggle (raw=true).
             do
-                local atk_right = atk_x + 4*(atk_cell_w + atk_gap) - atk_gap
                 local col0_x  = mot_x
                 local colA_x  = col0_x + dir_cell + MOT_GAP
                 local colB_x  = colA_x + dir_cell + MOT_GAP
-                local colC_x  = atk_right + 14
+                -- SA column sits just right of the last motion column.
+                local colC_x  = colB_x + dir_cell + MOT_GAP
                 -- col 0: 720 (standalone double-spin motion)
                 -- col A/B: standard motion inputs (dir tokens)
                 -- col C: SA buttons (btn tokens, gold tint)
@@ -4781,18 +5379,16 @@ function()
                     local hov  = hit_rect(bx, by, dir_cell, dir_cell)
                     local is_x2 = me[4] == "x2"
                     local is_sa = me[6] == true
-                    local fill = is_sa  and (hov and 0xFF6A5500 or 0xFF3D3000)
-                              or is_x2  and (hov and 0xFF5A3A6A or 0xFF3A2048)
-                              or              (hov and CN_DIR_HOVER or CN_DIR_BG)
-                    local border = is_sa  and 0xFFCCAA00
-                                or is_x2  and 0xFF8855BB
-                                or              CN_DIR_BORDER
+                    -- Base (non-hover) fill per type; arcade_button brightens
+                    -- on hover itself, so pass the base color + hov flag.
+                    local fill = is_sa  and 0xFF3D3000
+                              or is_x2  and 0xFF3A2048
+                              or              _SF6UI.cncol.CN_DIR_BG
                     local tcol  = is_sa  and 0xFFFFDD55
                                or is_x2  and 0xFFCC88FF
-                               or              CN_DIR_TEXT
-                    fill_circle(bcx+2, bcy+2, r, 0x66000000)
-                    fill_circle(bcx, bcy, r, fill)
-                    d2d.outline_rect(bx, by, dir_cell, dir_cell, 1, border)
+                               or              _SF6UI.cncol.CN_DIR_TEXT
+                    -- Convex arcade dome (matches the rest of the input pad)
+                    _SF6UI.UI.arcade_button(bcx, bcy, r, fill, hov)
                     local disp = (me[5] or is_x2) and me[3] or notation(me[3])
                     local lw, lh = font_menu:measure(disp)
                     d2d.text(font_menu, disp, bcx - lw/2, bcy - lh/2, tcol)
@@ -4834,39 +5430,52 @@ function()
                 -- Row 3 cols 1/2 intentionally empty in Modern (no PP/KK
                 -- — OD is implicit in Modern's L/M/H + SP combinations).
             else
-                -- Classic palette — unchanged.
-                -- Row 1: LP  MP  HP
+                -- Classic palette.
+                -- Row 1: LP  MP  HP  PP   (PP/KK in col 4 beside HP/HK so the
+                -- Row 2: LK  MK  HK  KK    OD buttons sit next to their normals
+                --                          and fill the old top-right gap)
                 atk_btn(1, 1, "LP")
                 atk_btn(2, 1, "MP")
                 atk_btn(3, 1, "HP")
-                -- Row 2: LK  MK  HK
+                atk_btn(4, 1, "PP")
                 atk_btn(1, 2, "LK")
                 atk_btn(2, 2, "MK")
                 atk_btn(3, 2, "HK")
-                -- Row 3: OD buttons
-                atk_btn(1, 3, "PP")
-                atk_btn(2, 3, "KK")
+                atk_btn(4, 2, "KK")
             end
-            -- Row 3 col 3: xx cancel
+            -- Section divider: a line under the P/K block (rows 1-2),
+            -- drawn in the MOD_GAP space, spanning the 4-col attack block
+            -- width. Uses the violet accent (full opacity) + a faint glow
+            -- beneath so it reads as a deliberate section break rather than
+            -- a hairline row separator (T.divider is ~80% transparent).
             do
-                local cx = atk_x + 2*(atk_cell_w + atk_gap) + atk_cell_w/2
-                local cy = content_y + 2*(atk_cell_h + atk_gap) + atk_cell_h/2
-                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 2
+                local div_y = content_y + 2*(atk_cell_h + atk_gap) + math.floor(MOD_GAP/2)
+                local div_x1 = atk_x
+                local div_x2 = atk_x + atk_block_w
+                -- Soft glow underline (translucent violet, 1px below)
+                d2d.line(div_x1, div_y + 1, div_x2, div_y + 1, 3,
+                    _SF6UI.THEME.accent_neutral % 0x1000000 + 0x33000000)
+                -- Main accent line
+                d2d.line(div_x1, div_y, div_x2, div_y, 2, _SF6UI.THEME.accent_neutral)
+            end
+            -- Row 3 col 1: xx cancel
+            do
+                local cx = atk_x + 0*(atk_cell_w + atk_gap) + atk_cell_w/2
+                local cy = content_y + 2*(atk_cell_h + atk_gap) + atk_cell_h/2 + MOD_GAP
+                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 6
                 local hov = hit_rect(cx-r, cy-r, r*2, r*2)
-                fill_circle(cx+2, cy+2, r, 0x66000000)
-                fill_circle(cx, cy, r, hov and 0xFF3A3A4A or 0xFF252530)
-                d2d.outline_rect(cx-r, cy-r, r*2, r*2, 1, 0x88AAAACC)
+                _SF6UI.UI.arcade_button(cx, cy, r, 0xFF252530, hov)
                 local tw, th = font_button:measure("xx")
-                d2d.text(font_button, "xx", cx - tw/2, cy - th/2, CN_CANCEL_COL)
+                d2d.text(font_button, "xx", cx - tw/2, cy - th/2, _SF6UI.cncol.CN_CANCEL_COL)
                 if cn_click(cx-r, cy-r, r*2, r*2) then
                     insert_at_cursor({t="btn", v="xx"})
                 end
             end
-            -- Row 4: Drive / Walk mechanics
-            atk_btn(1, 4, "DR")
-            atk_btn(2, 4, "DRC")
-            atk_btn(3, 4, "MW")
-            -- Row 5: Oki
+            -- Row 3 cols 2-4: Drive / Walk mechanics
+            atk_btn(2, 3, "DR")
+            atk_btn(3, 3, "DRC")
+            atk_btn(4, 3, "MW")
+            -- Row 4 col 1: Oki
             do
                 local oki_ctr    = slot_data.counter or 0
                 local oki_prefix = oki_ctr > 0 and ("+"..oki_ctr)
@@ -4874,16 +5483,13 @@ function()
                                or  "0"
                 local oki_token  = "[" .. oki_prefix .. ":Oki]"
                 local cx = atk_x + 0*(atk_cell_w + atk_gap) + atk_cell_w/2
-                local cy = content_y + 4*(atk_cell_h + atk_gap) + atk_cell_h/2
-                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 2
+                local cy = content_y + 3*(atk_cell_h + atk_gap) + atk_cell_h/2 + MOD_GAP
+                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 6
                 local col_fill = CN_BTN_COLORS["Oki"] or 0xFF666666
                 local hov = hit_rect(cx-r, cy-r, r*2, r*2)
-                fill_circle(cx+2, cy+2, r, 0x66000000)
-                fill_circle(cx, cy, r, hov and (col_fill + 0x00181818) or col_fill)
-                fill_circle(cx, cy - math.floor(r*0.35), math.floor(r*0.55), 0x22FFFFFF)
-                d2d.outline_rect(cx-r, cy-r, r*2, r*2, 1, 0x88FFFFFF)
+                _SF6UI.UI.arcade_button(cx, cy, r, col_fill, hov)
                 local tw, th = font_button:measure("Oki")
-                d2d.text(font_button, "Oki", cx - tw/2, cy - th/2, CN_BTN_TEXT)
+                d2d.text(font_button, "Oki", cx - tw/2, cy - th/2, _SF6UI.cncol.CN_BTN_TEXT)
                 if cn_click(cx-r, cy-r, r*2, r*2) then
                     insert_at_cursor({t="btn", v=oki_token})
                 end
@@ -4899,42 +5505,36 @@ function()
                               or  fk_ctr < 0 and (tostring(fk_ctr))
                               or  "0"
                 local cx = atk_x + 1*(atk_cell_w + atk_gap) + atk_cell_w/2
-                local cy = content_y + 4*(atk_cell_h + atk_gap) + atk_cell_h/2
-                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 2
+                local cy = content_y + 3*(atk_cell_h + atk_gap) + atk_cell_h/2 + MOD_GAP
+                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 6
                 local col_fill = 0xFF8B1A1A
                 local hov = hit_rect(cx-r, cy-r, r*2, r*2)
-                fill_circle(cx+2, cy+2, r, 0x66000000)
-                fill_circle(cx, cy, r, hov and 0xFFAA2222 or col_fill)
-                fill_circle(cx, cy - math.floor(r*0.35), math.floor(r*0.55), 0x22FFFFFF)
-                d2d.outline_rect(cx-r, cy-r, r*2, r*2, 1, 0xAAFF6666)
+                _SF6UI.UI.arcade_button(cx, cy, r, col_fill, hov)
                 local tw, th = font_button:measure("F.Kill")
                 d2d.text(font_button, "F.Kill", cx - tw/2, cy - th/2, 0xFFFF9999)
                 if cn_click(cx-r, cy-r, r*2, r*2) then
                     insert_at_cursor({t="fk", v=fk_prefix})
                 end
             end
-            -- Col 4, Rows 3/4/5: CH (Counter Hit), PC (Punish Counter),
-            -- SHM (Shimmy). These are post-hit annotations — stored as
-            -- standalone btn tokens (see STANDALONE_BTNS in tokens_to_seq).
-            -- Shares the same circle look as the standard atk_btn so it
-            -- visually groups with the rest of the attack pad.
+            -- CH (Counter Hit), PC (Punish Counter), SHM (Shimmy) — post-hit
+            -- annotations stored as standalone btn tokens. Repacked into the
+            -- denser grid: CH=(col3,row4), PC=(col4,row4), SHM=(col1,row5)
+            -- (each now carries its own col/row since they're no longer a
+            -- single column).
             for _, info in ipairs({
-                { row=3, label="CH"  },
-                { row=4, label="PC"  },
-                { row=5, label="SHM" },
+                { col=2, row=4, label="CH"  },
+                { col=3, row=4, label="PC"  },
+                { col=0, row=5, label="SHM" },
             }) do
-                local cx = atk_x + 3*(atk_cell_w + atk_gap) + atk_cell_w/2
-                local cy = content_y + (info.row-1)*(atk_cell_h + atk_gap) + atk_cell_h/2
-                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 2
+                local cx = atk_x + info.col*(atk_cell_w + atk_gap) + atk_cell_w/2
+                local cy = content_y + (info.row-1)*(atk_cell_h + atk_gap) + atk_cell_h/2 + MOD_GAP
+                local r  = math.floor(math.min(atk_cell_w, atk_cell_h)/2) - 6
                 local col_fill = CN_BTN_COLORS[info.label] or 0xFF666666
                 local hov = hit_rect(cx-r, cy-r, r*2, r*2)
-                fill_circle(cx+2, cy+2, r, 0x66000000)
-                fill_circle(cx, cy, r, hov and (col_fill + 0x00181818) or col_fill)
-                fill_circle(cx, cy - math.floor(r*0.35), math.floor(r*0.55), 0x22FFFFFF)
-                d2d.outline_rect(cx-r, cy-r, r*2, r*2, 1, 0x88FFFFFF)
+                _SF6UI.UI.arcade_button(cx, cy, r, col_fill, hov)
                 local tw, th = font_button:measure(info.label)
                 d2d.text(font_button, info.label,
-                    cx - tw/2, cy - th/2, CN_BTN_TEXT)
+                    cx - tw/2, cy - th/2, _SF6UI.cncol.CN_BTN_TEXT)
                 if cn_click(cx-r, cy-r, r*2, r*2) then
                     insert_at_cursor({t="btn", v=info.label})
                 end
@@ -4943,8 +5543,8 @@ function()
             -- ── RIGHT COLUMN: 30-slot scrollable list ────────
             -- Divider line between input pad and slot list
             local list_x = mx + input_w + 8
-            d2d.fill_rect(list_x - 4, content_y, 1, mh - row_h - 16,
-                0xFF3A3A55)
+            d2d.line(list_x - 4, content_y, list_x - 4, content_y + mh - row_h - 16,
+                1, _SF6UI.THEME.divider)
 
             local list_item_h = row_h + 2
             local cb_size     = cfg.menu_font_size - 4   -- checkbox square
@@ -4996,15 +5596,15 @@ function()
                 do
                     local can = cn_refresh.notes_scroll > 0
                     local hov = can and hit_rect(arr_up_x, arr_y, arr_w, arr_h)
-                    d2d.fill_rect(arr_up_x, arr_y, arr_w, arr_h,
-                        can and (hov and C_BTN_ACTIVE or C_BTN_BG) or 0xFF0D0D0D)
-                    d2d.outline_rect(arr_up_x, arr_y, arr_w, arr_h, 1,
-                        can and C_BTN_BORDER or 0xFF2A2A2A)
+                    d2d.fill_rounded_rect(arr_up_x, arr_y, arr_w, arr_h, 4, 4,
+                        can and (hov and _SF6UI.THEME.btn_hover or _SF6UI.THEME.btn_idle) or 0xFF0D0D0D)
+                    d2d.rounded_rect(arr_up_x, arr_y, arr_w, arr_h, 4, 4, 1,
+                        can and _SF6UI.THEME.panel_border or 0xFF2A2A2A)
                     local lw, lh = font_menu:measure("^")
                     d2d.text(font_menu, "^",
                         arr_up_x + (arr_w - lw)/2,
                         arr_y + (arr_h - lh)/2,
-                        can and C_VALUE or C_DIM)
+                        can and _SF6UI.THEME.text_value or _SF6UI.THEME.text_muted)
                     if can and cn_clicked and cn_hit(arr_up_x, arr_y, arr_w, arr_h) then
                         cn_clicked = false
                         cn_refresh.notes_scroll = cn_refresh.notes_scroll - 1
@@ -5014,15 +5614,15 @@ function()
                 do
                     local can = cn_refresh.notes_scroll < max_scroll
                     local hov = can and hit_rect(arr_dn_x, arr_y, arr_w, arr_h)
-                    d2d.fill_rect(arr_dn_x, arr_y, arr_w, arr_h,
-                        can and (hov and C_BTN_ACTIVE or C_BTN_BG) or 0xFF0D0D0D)
-                    d2d.outline_rect(arr_dn_x, arr_y, arr_w, arr_h, 1,
-                        can and C_BTN_BORDER or 0xFF2A2A2A)
+                    d2d.fill_rounded_rect(arr_dn_x, arr_y, arr_w, arr_h, 4, 4,
+                        can and (hov and _SF6UI.THEME.btn_hover or _SF6UI.THEME.btn_idle) or 0xFF0D0D0D)
+                    d2d.rounded_rect(arr_dn_x, arr_y, arr_w, arr_h, 4, 4, 1,
+                        can and _SF6UI.THEME.panel_border or 0xFF2A2A2A)
                     local lw, lh = font_menu:measure("v")
                     d2d.text(font_menu, "v",
                         arr_dn_x + (arr_w - lw)/2,
                         arr_y + (arr_h - lh)/2,
-                        can and C_VALUE or C_DIM)
+                        can and _SF6UI.THEME.text_value or _SF6UI.THEME.text_muted)
                     if can and cn_clicked and cn_hit(arr_dn_x, arr_y, arr_w, arr_h) then
                         cn_clicked = false
                         cn_refresh.notes_scroll = cn_refresh.notes_scroll + 1
@@ -5042,29 +5642,41 @@ function()
 
                 -- Highlight active editing row
                 if is_edit then
-                    d2d.fill_rect(list_x, sy - 1,
-                        slot_list_w - 4, list_item_h,
-                        0xFF1E1E30)
+                    d2d.fill_rounded_rect(list_x, sy - 1,
+                        slot_list_w - 4, list_item_h, 5, 5,
+                        _SF6UI.THEME.row_active_bg)
+                    d2d.rounded_rect(list_x, sy - 1,
+                        slot_list_w - 4, list_item_h, 5, 5, 1,
+                        _SF6UI.THEME.accent_neutral)
                 elseif hit_rect(list_x, sy, slot_list_w - 4, list_item_h) then
-                    d2d.fill_rect(list_x, sy - 1,
-                        slot_list_w - 4, list_item_h, 0xFF252535)
+                    d2d.fill_rounded_rect(list_x, sy - 1,
+                        slot_list_w - 4, list_item_h, 5, 5, _SF6UI.THEME.row_hover)
                 end
 
-                -- Checkbox (drawn; click handled by unified dispatcher below)
+                -- "Show" toggle (mini capsule, matches the Display toggles).
+                -- Hit rect stays exactly cb_x/cb_y/cb_size so click logic below
+                -- is unchanged.
                 local cb_x = list_x + 4
                 local cb_y = sy + (list_item_h - cb_size) / 2
-                d2d.fill_rect(cb_x, cb_y, cb_size, cb_size, 0xFF111118)
-                d2d.outline_rect(cb_x, cb_y, cb_size, cb_size, 1, CN_DIR_BORDER)
-                if sdat.active then
-                    d2d.fill_rect(cb_x+2, cb_y+2, cb_size-4, cb_size-4, 0xFF32B46E)
-                end
+                local trk_h = cb_size
+                local trk_w = math.floor(cb_size * 1.6)
+                local trk_r = trk_h / 2
+                local on    = sdat.active
+                d2d.fill_rounded_rect(cb_x, cb_y, trk_w, trk_h, trk_r, trk_r,
+                    on and _SF6UI.THEME.toggle_on_bg or _SF6UI.THEME.toggle_off_bg)
+                d2d.rounded_rect(cb_x, cb_y, trk_w, trk_h, trk_r, trk_r, 1,
+                    _SF6UI.THEME.panel_border)
+                local knob_r = trk_r - 2
+                local knob_cx = on and (cb_x + trk_w - trk_r) or (cb_x + trk_r)
+                d2d.fill_circle(knob_cx, cb_y + trk_r, knob_r,
+                    on and _SF6UI.THEME.toggle_knob or _SF6UI.THEME.toggle_knob_off)
 
                 -- Slot number prefix (always shown, not editable)
                 local prefix = tostring(s) .. ". "
                 local pw, _ = font_menu:measure(prefix)
                 d2d.text(font_menu, prefix,
                     title_x, sy + (list_item_h - cfg.menu_font_size)/2,
-                    is_edit and C_VALUE or CN_DIR_TEXT)
+                    is_edit and C_VALUE or _SF6UI.cncol.CN_DIR_TEXT)
 
                 -- Title (static d2d text)
                 local tx2 = title_x + pw
@@ -5072,11 +5684,11 @@ function()
                     and sdat.title or ("Slot " .. s)
                 d2d.text(font_menu, title_label,
                     tx2, sy + (list_item_h - cfg.menu_font_size)/2,
-                    is_edit and C_VALUE or CN_DIR_TEXT)
+                    is_edit and C_VALUE or _SF6UI.cncol.CN_DIR_TEXT)
 
-                -- ── Click handler: checkbox or row body ──────────
+                -- ── Click handler: toggle or row body ──────────
                 if cn_clicked and cn_hit(list_x, sy, slot_list_w - 4, list_item_h) then
-                    if hit_rect(cb_x, cb_y, cb_size, cb_size) then
+                    if hit_rect(cb_x, cb_y, trk_w, trk_h) then
                         cn_clicked = false
                         if sdat.active then
                             sdat.active = false
@@ -5138,12 +5750,12 @@ function()
             -- [ < ] arrow
             local dec_x = ctr_x
             local hov_dec = hit_rect(dec_x, ctr_y, arrow_w, arrow_h)
-            d2d.fill_rect(dec_x, ctr_y, arrow_w, arrow_h,
-                hov_dec and C_BTN_ACTIVE or C_BTN_BG)
-            d2d.outline_rect(dec_x, ctr_y, arrow_w, arrow_h, 1, C_BTN_BORDER)
+            d2d.fill_rounded_rect(dec_x, ctr_y, arrow_w, arrow_h, 5, 5,
+                hov_dec and _SF6UI.THEME.pill_arrow_hi or _SF6UI.THEME.pill_arrow_bg)
+            d2d.rounded_rect(dec_x, ctr_y, arrow_w, arrow_h, 5, 5, 1, _SF6UI.THEME.panel_border)
             local al, ah = font_menu:measure("<")
             d2d.text(font_menu, "<",
-                dec_x + (arrow_w-al)/2, ctr_y + (arrow_h-ah)/2, C_BTN_TEXT)
+                dec_x + (arrow_w-al)/2, ctr_y + (arrow_h-ah)/2, _SF6UI.THEME.pill_arrow_txt)
             if cn_click(dec_x, ctr_y, arrow_w, arrow_h) then
                 slot_data.counter = math.max(-120, ctr_val - 1)
                 combo_notes_dirty[char_name] = true
@@ -5153,11 +5765,10 @@ function()
             local val_x = dec_x + arrow_w + 2
             local val_str = tostring(ctr_val)
             if ctr_val > 0 then val_str = "+" .. val_str end
-            local val_col = ctr_val > 0 and C_GOOD
-                         or ctr_val < 0 and C_BAD
-                         or C_DIM
-            d2d.fill_rect(val_x, ctr_y, val_w, arrow_h, 0xFF0D0D18)
-            d2d.outline_rect(val_x, ctr_y, val_w, arrow_h, 1, 0xFF2A2A3A)
+            local val_col = ctr_val > 0 and _SF6UI.THEME.accent_ok
+                         or ctr_val < 0 and _SF6UI.THEME.accent_bad
+                         or _SF6UI.THEME.text_value
+            d2d.fill_rounded_rect(val_x, ctr_y, val_w, arrow_h, 5, 5, _SF6UI.THEME.pill_value_bg)
             local vl, vh = font_menu:measure(val_str)
             d2d.text(font_menu, val_str,
                 val_x + (val_w - vl)/2, ctr_y + (arrow_h - vh)/2, val_col)
@@ -5165,12 +5776,12 @@ function()
             -- [ > ] arrow
             local inc_x = val_x + val_w + 2
             local hov_inc = hit_rect(inc_x, ctr_y, arrow_w, arrow_h)
-            d2d.fill_rect(inc_x, ctr_y, arrow_w, arrow_h,
-                hov_inc and C_BTN_ACTIVE or C_BTN_BG)
-            d2d.outline_rect(inc_x, ctr_y, arrow_w, arrow_h, 1, C_BTN_BORDER)
+            d2d.fill_rounded_rect(inc_x, ctr_y, arrow_w, arrow_h, 5, 5,
+                hov_inc and _SF6UI.THEME.pill_arrow_hi or _SF6UI.THEME.pill_arrow_bg)
+            d2d.rounded_rect(inc_x, ctr_y, arrow_w, arrow_h, 5, 5, 1, _SF6UI.THEME.panel_border)
             local al2, ah2 = font_menu:measure(">")
             d2d.text(font_menu, ">",
-                inc_x + (arrow_w-al2)/2, ctr_y + (arrow_h-ah2)/2, C_BTN_TEXT)
+                inc_x + (arrow_w-al2)/2, ctr_y + (arrow_h-ah2)/2, _SF6UI.THEME.pill_arrow_txt)
             if cn_click(inc_x, ctr_y, arrow_w, arrow_h) then
                 slot_data.counter = math.min(120, ctr_val + 1)
                 combo_notes_dirty[char_name] = true
@@ -5209,9 +5820,9 @@ function()
                 -- text alone is enough of a visual break.
                 local hk_h   = hk_lh * 7 + 10
 
-                d2d.fill_rect(hk_x, hk_top, hk_w, hk_h, 0xFF101020)
-                d2d.outline_rect(hk_x, hk_top, hk_w, hk_h, 1, 0xFF2A2A3A)
-                d2d.text(font_menu, "Hotkeys", hk_x + 6, hk_top + 4, C_DIM)
+                d2d.fill_rounded_rect(hk_x, hk_top, hk_w, hk_h, 6, 6, _SF6UI.THEME.panel_bg_inner)
+                d2d.rounded_rect(hk_x, hk_top, hk_w, hk_h, 6, 6, 1, _SF6UI.THEME.panel_border)
+                d2d.text(font_menu, "Hotkeys", hk_x + 6, hk_top + 4, _SF6UI.THEME.accent_neutral)
 
                 -- Helper: draw a "TAG  description" row with TAG in
                 -- a button-color and the description dimmed. The
@@ -5277,7 +5888,7 @@ function()
             local preview_maxw = input_w - 14
             local preview_lh   = cfg.menu_font_size + 6
             -- Dir pad is 5 rows: content_y + 5*(dir_cell+dir_gap) + small gap
-            local grid_btm     = content_y + 5*(dir_cell + dir_gap) + 8
+            local grid_btm     = content_y + 5*(dir_cell + dir_gap) + 8 + MOD_GAP
             local bh2_calc     = row_h + 4
             local bot_y_calc   = my + mh - bh2_calc - 6
 
@@ -5318,12 +5929,12 @@ function()
             end
             local legend_h    = (legend_rows_per_col + extra_lines) * legend_lh + 22
 
-            d2d.fill_rect(preview_x0, legend_top,
-                preview_maxw, legend_h, 0xFF101020)
-            d2d.outline_rect(preview_x0, legend_top,
-                preview_maxw, legend_h, 1, 0xFF2A2A3A)
+            d2d.fill_rounded_rect(preview_x0, legend_top,
+                preview_maxw, legend_h, 6, 6, _SF6UI.THEME.panel_bg_inner)
+            d2d.rounded_rect(preview_x0, legend_top,
+                preview_maxw, legend_h, 6, 6, 1, _SF6UI.THEME.panel_border)
             d2d.text(font_menu, "Legend",
-                preview_x0 + 6, legend_top + 4, C_DIM)
+                preview_x0 + 6, legend_top + 4, _SF6UI.THEME.accent_neutral)
 
             do
                 local col_w = math.floor((preview_maxw - 12) / legend_cols)
@@ -5344,7 +5955,7 @@ function()
                     -- Pick color from button color tables; fall back to dim.
                     local tag_col = CN_BTN_COLORS[tag]
                                  or (tag == "F.Kill" and 0xFFFF9999)
-                                 or (tag == "xx"     and CN_CANCEL_COL)
+                                 or (tag == "xx"     and _SF6UI.cncol.CN_CANCEL_COL)
                                  or C_LABEL
                     d2d.text(font_menu, tag, lx, ly, tag_col)
                     local tw_tag, _ = font_menu:measure(tag)
@@ -5366,11 +5977,12 @@ function()
             local preview_top  = legend_top + legend_h + 6
             local preview_btm  = bot_y_calc - 6  -- stops just above bottom buttons
 
-            -- Background fill for the preview area
-            d2d.fill_rect(preview_x0, preview_top,
-                preview_maxw, preview_btm - preview_top, 0xFF0D0D18)
-            d2d.outline_rect(preview_x0, preview_top,
-                preview_maxw, preview_btm - preview_top, 1, 0xFF2A2A3A)
+            -- Background fill for the preview area (the "build here" box —
+            -- give it a subtle accent border so it reads as the focal area)
+            d2d.fill_rounded_rect(preview_x0, preview_top,
+                preview_maxw, preview_btm - preview_top, 7, 7, _SF6UI.THEME.panel_bg_inner)
+            d2d.rounded_rect(preview_x0, preview_top,
+                preview_maxw, preview_btm - preview_top, 7, 7, 1, _SF6UI.THEME.accent_neutral)
 
             -- Slot label
             local label_y = preview_top + 4
@@ -5459,15 +6071,15 @@ function()
                         d2d.text(font_menu, ">",
                             px2 + 2,
                             py2 + (preview_lh - cfg.menu_font_size)/2,
-                            CN_CANCEL_COL)
+                            _SF6UI.cncol.CN_CANCEL_COL)
                         px2 = px2 + sep_w
                     end
 
-                    local tcol = is_xx and CN_CANCEL_COL
+                    local tcol = is_xx and _SF6UI.cncol.CN_CANCEL_COL
                              or is_fk and 0xFFFF9999
-                             or is_sep and CN_CANCEL_COL
+                             or is_sep and _SF6UI.cncol.CN_CANCEL_COL
                              or (tok.t == "btn") and (CN_BTN_COLORS[tok.v] or C_LABEL)
-                             or CN_DIR_TEXT
+                             or _SF6UI.cncol.CN_DIR_TEXT
 
                     -- Highlight token under mouse — visual cue this is clickable.
                     local tok_x, tok_y, tok_w, tok_h = px2 - 2, py2, tw2 + 4, preview_lh
@@ -5883,9 +6495,9 @@ re.on_draw_ui(function()
                 stance_state.active, stance_state.char or "?",
                 stance_state.frames, tostring(stance_state.sub_state)))
         end
-        imgui.text("  P1 X: " .. tostring(dbg_p1x) .. "  P2 X: " .. tostring(dbg_p2x))
-        imgui.text("  P1 Y: " .. tostring(dbg_p1y) .. "  Z: " .. tostring(dbg_p1z) .. "  airborne: " .. tostring(is_airborne))
-        imgui.text("  Fields: " .. (dbg_fields and table.concat(dbg_fields, " ") or "none"))
+        imgui.text("  P1 X: " .. tostring(_SF6UI.dbg.dbg_p1x) .. "  P2 X: " .. tostring(_SF6UI.dbg.dbg_p2x))
+        imgui.text("  P1 Y: " .. tostring(_SF6UI.dbg.dbg_p1y) .. "  Z: " .. tostring(_SF6UI.dbg.dbg_p1z) .. "  airborne: " .. tostring(is_airborne))
+        imgui.text("  Fields: " .. (_SF6UI.dbg.dbg_fields and table.concat(_SF6UI.dbg.dbg_fields, " ") or "none"))
         if current_move.p1 then
             imgui.text("  P1 Move: " .. (current_move.p1.name or "?"))
         else
