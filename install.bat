@@ -179,8 +179,36 @@ if errorlevel 1 (
 )
 echo Done.
 
-REM -- 6. Frame data download + offline fallback --------------
+REM -- 5b. Button glyph icons (fist.png / foot.png) ----------
+REM The overlay loads these via d2d.Image.new("fist.png"/"foot.png"),
+REM which resolves relative to <SF6_DIR>\reframework\images\. They are
+REM optional: the Lua wraps loading in pcall and falls back to "P"/"K"
+REM text if absent, so a copy failure here is a WARNING, not fatal.
+echo Installing button glyph icons...
+set "DEST_IMG=!SF6_DIR!\reframework\images"
+if not exist "!DEST_IMG!" mkdir "!DEST_IMG!"
+
+set "GLYPH_OK=1"
+if exist "%~dp0reframework\images\fist.png" (
+    copy /Y "%~dp0reframework\images\fist.png" "!DEST_IMG!\" >nul || set "GLYPH_OK=0"
+) else (
+    set "GLYPH_OK=0"
+)
+if exist "%~dp0reframework\images\foot.png" (
+    copy /Y "%~dp0reframework\images\foot.png" "!DEST_IMG!\" >nul || set "GLYPH_OK=0"
+) else (
+    set "GLYPH_OK=0"
+)
+
+if "!GLYPH_OK!"=="0" (
+    echo WARNING: button glyph PNGs not fully installed.
+    echo          The overlay will fall back to "P"/"K" text labels.
+    echo          Expected source: %~dp0reframework\images\fist.png ^& foot.png
+) else (
+    echo Button glyph icons installed.
+)
 echo.
+REM -- 6. Frame data download + offline fallback --------------
 echo --------------------------------------------
 echo Step 4/5: Frame data
 echo --------------------------------------------
@@ -233,6 +261,7 @@ echo Installed files:
 echo   !SF6_DIR!\dinput8.dll                              (REFramework)
 echo   !SF6_DIR!\reframework\plugins\reframework-d2d.dll  (d2d plugin)
 echo   !DEST_LUA!\SF6_Overlay.lua                          (overlay)
+echo   !DEST_IMG!\fist.png, foot.png                       (button glyphs)
 echo   !DEST_DATA!\^<Character^>\framedata.json             (frame data)
 echo.
 echo NOTE: Do not move or delete this folder if you created a shortcut.

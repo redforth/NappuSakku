@@ -68,6 +68,7 @@ for i, n in ipairs(ROSTER) do ROSTER_INDEX[n] = i end
 -- ── DEFAULT CONFIG ───────────────────────────────────────────
 local cfg = {
     config_version      = 2,       -- bump when a one-time cfg migration is added
+    accent_preset       = "violet", -- menu accent palette key (see THEME.ACCENTS)
     show_overlay        = true,
     show_button_bar     = true,
     show_ticks          = true,
@@ -2861,6 +2862,124 @@ end
 --  init_colors(). No existing C_* constant or feature logic is touched.
 -- ═══════════════════════════════════════════════════════════════════════════
 
+-- ── ACCENT PRESETS ─────────────────────────────────────────────────────
+-- Hand-tuned accent palettes. Each preset overrides ONLY the accent-family
+-- keys; structural surfaces (panel_bg, text_*, btn_idle) are shared and set
+-- unconditionally in init(). Selected via cfg.accent_preset (a key below).
+-- Lives on the _SF6UI global => costs no file-scope local slots.
+-- argb(r, g, b, a). To add a preset: copy a block, retune, add its key to
+-- ACCENT_ORDER. Menu-only: ticker (TC_*) and P1/P2 colors are NOT touched.
+_SF6UI.THEME.ACCENT_ORDER = { "violet", "ocean", "emerald", "crimson", "amber" }
+_SF6UI.THEME.ACCENT_NAMES = {
+    violet = "Violet", ocean = "Ocean", emerald = "Emerald",
+    crimson = "Crimson", amber = "Amber",
+}
+-- Swatch RGBA shown next to the picker (matches each preset's btn_active hue).
+_SF6UI.THEME.ACCENT_SWATCH = {
+    violet  = { 0.52, 0.38, 0.92, 1.0 },
+    ocean   = { 0.24, 0.55, 0.95, 1.0 },
+    emerald = { 0.20, 0.74, 0.52, 1.0 },
+    crimson = { 0.90, 0.30, 0.42, 1.0 },
+    amber   = { 0.95, 0.62, 0.18, 1.0 },
+}
+_SF6UI.THEME.ACCENTS = {
+    violet = function(argb) return {
+        panel_border  = argb(0.45, 0.40, 0.70, 0.45),
+        title_bg      = argb(0.16, 0.12, 0.28, 1.0),
+        title_bg_lo   = argb(0.10, 0.08, 0.18, 1.0),
+        accent_neutral= argb(0.55, 0.42, 0.95, 1.00),
+        accent_neutral2=argb(0.40, 0.62, 0.98, 1.00),
+        btn_hover     = argb(0.24, 0.20, 0.40, 0.98),
+        btn_active    = argb(0.52, 0.38, 0.92, 1.00),
+        btn_border    = argb(0.42, 0.40, 0.62, 0.50),
+        btn_border_hi = argb(0.68, 0.58, 0.98, 0.80),
+        divider       = argb(0.55, 0.50, 0.75, 0.20),
+        divider_strong= argb(0.60, 0.54, 0.82, 0.38),
+        toggle_on_bg  = argb(0.55, 0.40, 0.95, 1.00),
+        toggle_on_glow= argb(0.55, 0.40, 0.95, 0.30),
+        pill_arrow_hi = argb(0.40, 0.30, 0.70, 1.00),
+        pill_arrow_txt= argb(0.80, 0.74, 1.00, 1.00),
+        row_hover     = argb(0.45, 0.35, 0.80, 0.16),
+        row_active_bg = argb(0.40, 0.32, 0.70, 0.14),
+    } end,
+    ocean = function(argb) return {
+        panel_border  = argb(0.30, 0.52, 0.78, 0.45),
+        title_bg      = argb(0.10, 0.18, 0.32, 1.0),
+        title_bg_lo   = argb(0.06, 0.12, 0.22, 1.0),
+        accent_neutral= argb(0.24, 0.62, 0.98, 1.00),
+        accent_neutral2=argb(0.30, 0.78, 0.92, 1.00),
+        btn_hover     = argb(0.16, 0.28, 0.46, 0.98),
+        btn_active    = argb(0.24, 0.55, 0.95, 1.00),
+        btn_border    = argb(0.32, 0.46, 0.66, 0.50),
+        btn_border_hi = argb(0.48, 0.70, 0.98, 0.80),
+        divider       = argb(0.42, 0.58, 0.80, 0.20),
+        divider_strong= argb(0.46, 0.62, 0.86, 0.38),
+        toggle_on_bg  = argb(0.24, 0.58, 0.96, 1.00),
+        toggle_on_glow= argb(0.24, 0.58, 0.96, 0.30),
+        pill_arrow_hi = argb(0.24, 0.44, 0.74, 1.00),
+        pill_arrow_txt= argb(0.70, 0.86, 1.00, 1.00),
+        row_hover     = argb(0.30, 0.55, 0.88, 0.16),
+        row_active_bg = argb(0.26, 0.50, 0.80, 0.14),
+    } end,
+    emerald = function(argb) return {
+        panel_border  = argb(0.28, 0.62, 0.48, 0.45),
+        title_bg      = argb(0.08, 0.24, 0.18, 1.0),
+        title_bg_lo   = argb(0.05, 0.16, 0.12, 1.0),
+        accent_neutral= argb(0.22, 0.78, 0.55, 1.00),
+        accent_neutral2=argb(0.34, 0.86, 0.62, 1.00),
+        btn_hover     = argb(0.14, 0.34, 0.28, 0.98),
+        btn_active    = argb(0.20, 0.74, 0.52, 1.00),
+        btn_border    = argb(0.30, 0.56, 0.46, 0.50),
+        btn_border_hi = argb(0.42, 0.82, 0.62, 0.80),
+        divider       = argb(0.40, 0.66, 0.56, 0.20),
+        divider_strong= argb(0.44, 0.70, 0.60, 0.38),
+        toggle_on_bg  = argb(0.22, 0.78, 0.54, 1.00),
+        toggle_on_glow= argb(0.22, 0.78, 0.54, 0.30),
+        pill_arrow_hi = argb(0.22, 0.54, 0.42, 1.00),
+        pill_arrow_txt= argb(0.74, 1.00, 0.88, 1.00),
+        row_hover     = argb(0.28, 0.74, 0.56, 0.16),
+        row_active_bg = argb(0.24, 0.66, 0.50, 0.14),
+    } end,
+    crimson = function(argb) return {
+        panel_border  = argb(0.70, 0.34, 0.42, 0.45),
+        title_bg      = argb(0.28, 0.10, 0.14, 1.0),
+        title_bg_lo   = argb(0.18, 0.06, 0.09, 1.0),
+        accent_neutral= argb(0.92, 0.34, 0.46, 1.00),
+        accent_neutral2=argb(0.98, 0.48, 0.42, 1.00),
+        btn_hover     = argb(0.40, 0.18, 0.24, 0.98),
+        btn_active    = argb(0.90, 0.30, 0.42, 1.00),
+        btn_border    = argb(0.62, 0.36, 0.42, 0.50),
+        btn_border_hi = argb(0.98, 0.52, 0.58, 0.80),
+        divider       = argb(0.75, 0.48, 0.52, 0.20),
+        divider_strong= argb(0.82, 0.52, 0.56, 0.38),
+        toggle_on_bg  = argb(0.92, 0.32, 0.44, 1.00),
+        toggle_on_glow= argb(0.92, 0.32, 0.44, 0.30),
+        pill_arrow_hi = argb(0.70, 0.26, 0.34, 1.00),
+        pill_arrow_txt= argb(1.00, 0.78, 0.80, 1.00),
+        row_hover     = argb(0.88, 0.34, 0.44, 0.16),
+        row_active_bg = argb(0.80, 0.30, 0.40, 0.14),
+    } end,
+    amber = function(argb) return {
+        panel_border  = argb(0.72, 0.56, 0.26, 0.45),
+        title_bg      = argb(0.28, 0.20, 0.06, 1.0),
+        title_bg_lo   = argb(0.18, 0.13, 0.04, 1.0),
+        accent_neutral= argb(0.96, 0.66, 0.20, 1.00),
+        accent_neutral2=argb(0.98, 0.78, 0.30, 1.00),
+        btn_hover     = argb(0.40, 0.30, 0.12, 0.98),
+        btn_active    = argb(0.95, 0.62, 0.18, 1.00),
+        btn_border    = argb(0.64, 0.52, 0.32, 0.50),
+        btn_border_hi = argb(0.98, 0.78, 0.46, 0.80),
+        divider       = argb(0.76, 0.62, 0.40, 0.20),
+        divider_strong= argb(0.82, 0.66, 0.44, 0.38),
+        toggle_on_bg  = argb(0.96, 0.64, 0.20, 1.00),
+        toggle_on_glow= argb(0.96, 0.64, 0.20, 0.30),
+        pill_arrow_hi = argb(0.72, 0.50, 0.20, 1.00),
+        pill_arrow_txt= argb(1.00, 0.90, 0.70, 1.00),
+        row_hover     = argb(0.92, 0.64, 0.24, 0.16),
+        row_active_bg = argb(0.84, 0.58, 0.22, 0.14),
+    } end,
+}
+
 function _SF6UI.THEME.init()
     local T = _SF6UI.THEME
     -- argb(r, g, b, a) — RED first, ALPHA last. Palette: deep near-black
@@ -2936,6 +3055,23 @@ function _SF6UI.THEME.init()
     T.pill_value_bg   = argb(0.11, 0.10, 0.17, 0.94)   -- value chip bg
     T.row_hover       = argb(0.45, 0.35, 0.80, 0.16)   -- subtle violet wash
     T.row_active_bg   = argb(0.40, 0.32, 0.70, 0.14)   -- tint behind an ON row
+
+    -- ── Apply selected accent preset ──────────────────────────────
+    -- Overrides the violet defaults above with the chosen palette. Done
+    -- last so the preset wins. Falls back to "violet" for an unknown key.
+    local key  = cfg.accent_preset or "violet"
+    local make = T.ACCENTS[key] or T.ACCENTS.violet
+    local p    = make(argb)
+    for k, v in pairs(p) do T[k] = v end
+    -- Presets give title_bg/_lo at full alpha; reapply the glass knob so
+    -- title transparency stays consistent with the rest of the menu.
+    local ga = math.min(1.0, g + 0.10)
+    if p.title_bg then
+        T.title_bg = (p.title_bg & 0x00FFFFFF) | (math.floor(ga * 255) << 24)
+    end
+    if p.title_bg_lo then
+        T.title_bg_lo = (p.title_bg_lo & 0x00FFFFFF) | (math.floor(ga * 255) << 24)
+    end
 end
 
 -- panel(x,y,w,h, accent|nil): shadow -> body -> accent strip -> sheen -> border
@@ -4802,6 +4938,28 @@ function()
             if row_cycle(colR_x, ryR, col_w, "Notes Font:",
                 tostring(cfg.notes_font_size) .. "px") then
                 cfg.notes_font_size = next_in_cycle(cfg.notes_font_size, FONT_SIZES)
+            end
+            ryR = ryR + row_h
+
+            -- Menu Accent: cycles the hand-tuned accent palettes. Rebuilds the
+            -- THEME on change so the menu recolors live; persisted via Save.
+            do
+                local order = _SF6UI.THEME.ACCENT_ORDER
+                local cur   = cfg.accent_preset or "violet"
+                local aidx  = 1
+                for i, k in ipairs(order) do if k == cur then aidx = i break end end
+                local aname = _SF6UI.THEME.ACCENT_NAMES[cur] or cur
+                if row_cycle(colR_x, ryR, col_w, "Menu Accent:", aname, true) then
+                    local next_i = (aidx % #order) + 1
+                    cfg.accent_preset = order[next_i]
+                    _SF6UI.THEME.init()   -- live recolor
+                end
+                local sw_ac = _SF6UI.THEME.ACCENT_SWATCH[cfg.accent_preset]
+                          or _SF6UI.THEME.ACCENT_SWATCH.violet
+                local ac_x = colR_x + col_w - 32
+                d2d.fill_rect(ac_x, ryR+4, 26, row_h-8,
+                    argb(sw_ac[1], sw_ac[2], sw_ac[3], sw_ac[4]))
+                d2d.outline_rect(ac_x, ryR+4, 26, row_h-8, 1, C_BTN_BORDER)
             end
             ryR = ryR + row_h
 
