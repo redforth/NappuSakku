@@ -179,33 +179,45 @@ if errorlevel 1 (
 )
 echo Done.
 
-REM -- 5b. Button glyph icons (fist.png / foot.png) ----------
-REM The overlay loads these via d2d.Image.new("fist.png"/"foot.png"),
-REM which resolves relative to <SF6_DIR>\reframework\images\. They are
-REM optional: the Lua wraps loading in pcall and falls back to "P"/"K"
-REM text if absent, so a copy failure here is a WARNING, not fatal.
-echo Installing button glyph icons...
+REM -- 5b. Glyph icons (buttons + direction/motion PNGs) -----
+REM The overlay loads icons via d2d.Image.new("<name>.png"), which resolves
+REM relative to <SF6_DIR>\reframework\images\. Two icon families exist:
+REM   - Button glyphs:  fist.png, foot.png
+REM   - Direction/motion glyphs: U D F B UF UB DF DB N QCF QCB DP RDP HCF
+REM     HCB SPD DD FF BB [B]F [D]U 720 360F 360B  (each <name>.png)
+REM Every load is wrapped in pcall in the Lua, so missing files fall back to
+REM "P"/"K" / lettered text. A copy failure here is therefore a WARNING,
+REM not fatal. We mirror the whole source images dir so new glyphs added to
+REM the Lua don't require editing this installer.
+echo Installing glyph icons (buttons + directions/motions)...
+set "SRC_IMG=%~dp0reframework\images"
 set "DEST_IMG=!SF6_DIR!\reframework\images"
 if not exist "!DEST_IMG!" mkdir "!DEST_IMG!"
 
 set "GLYPH_OK=1"
-if exist "%~dp0reframework\images\fist.png" (
-    copy /Y "%~dp0reframework\images\fist.png" "!DEST_IMG!\" >nul || set "GLYPH_OK=0"
-) else (
-    set "GLYPH_OK=0"
-)
-if exist "%~dp0reframework\images\foot.png" (
-    copy /Y "%~dp0reframework\images\foot.png" "!DEST_IMG!\" >nul || set "GLYPH_OK=0"
+if exist "!SRC_IMG!\*.png" (
+    REM Copy every PNG in the source images folder (covers fist/foot +
+    REM all direction/motion glyphs in one shot). robocopy is used for a
+    REM reliable exit-code contract; treat codes >=8 as failure.
+    robocopy "!SRC_IMG!" "!DEST_IMG!" *.png /NJH /NJS /NDL /NP >nul
+    if !ERRORLEVEL! GEQ 8 set "GLYPH_OK=0"
 ) else (
     set "GLYPH_OK=0"
 )
 
+REM Sanity-check that the two button glyphs actually landed.
+if not exist "!DEST_IMG!\fist.png" set "GLYPH_OK=0"
+if not exist "!DEST_IMG!\foot.png" set "GLYPH_OK=0"
+
 if "!GLYPH_OK!"=="0" (
-    echo WARNING: button glyph PNGs not fully installed.
-    echo          The overlay will fall back to "P"/"K" text labels.
-    echo          Expected source: %~dp0reframework\images\fist.png ^& foot.png
+    echo WARNING: glyph PNGs not fully installed.
+    echo          The overlay will fall back to "P"/"K" / lettered text labels.
+    echo          Expected source folder: !SRC_IMG!
 ) else (
-    echo Button glyph icons installed.
+    REM Report how many glyphs were copied for quick visual confirmation.
+    set "GLYPH_N=0"
+    for %%F in ("!DEST_IMG!\*.png") do set /a GLYPH_N+=1
+    echo Glyph icons installed ^(!GLYPH_N! PNG files^).
 )
 echo.
 REM -- 6. Frame data download + offline fallback --------------
@@ -261,7 +273,7 @@ echo Installed files:
 echo   !SF6_DIR!\dinput8.dll                              (REFramework)
 echo   !SF6_DIR!\reframework\plugins\reframework-d2d.dll  (d2d plugin)
 echo   !DEST_LUA!\SF6_Overlay.lua                          (overlay)
-echo   !DEST_IMG!\fist.png, foot.png                       (button glyphs)
+echo   !DEST_IMG!\*.png                                    (button + direction glyphs)
 echo   !DEST_DATA!\^<Character^>\framedata.json             (frame data)
 echo.
 echo NOTE: Do not move or delete this folder if you created a shortcut.
