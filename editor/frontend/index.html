@@ -369,6 +369,23 @@
     filter: grayscale(15%) contrast(1.05) saturate(0.85);
   }
 
+  /* Stationary foreground overlay — sits on top of the zooming bg,
+     full color (no filter), no animation. Layered via z-index inside
+     .bg-art-layer; inherits the layer's opacity + slide-in. */
+  .bg-art-layer img.bg-art-fg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: 75% center;
+    filter: none;
+    animation: none;
+    transform: none;
+    z-index: 2;
+    pointer-events: none;
+  }
+
   /* Status pill text + meta on hover */
   .char-meta { transition: color 220ms; z-index: 2; position: relative; }
   .char-card:hover .char-meta { color: rgba(240,238,230,0.85); }
@@ -634,9 +651,9 @@
      The cubic-bezier is front-loaded: ~55% of motion in the first ~15%
      of time, so by the time the 900ms layer fly-in completes, both the
      drift AND the zoom-out are already perceptibly underway. */
-  @keyframes bgKenBurns {
-    0%   { transform: scale(1.15) translateX(0); }
-    100% { transform: scale(1.00) translateX(80px); }
+    @keyframes bgKenBurns {
+    0%   { transform: scale(1.00); }
+    100% { transform: scale(1.15); }
   }
   .anim-bg-kenburns {
     animation: bgKenBurns 27s cubic-bezier(.15,.55,.4,1) infinite;
@@ -1540,7 +1557,7 @@ const AUDIO_DB_STORE = 'blobs';
 const AUDIO_DB_KEY = 'custom';
 
 const SETTINGS_DEFAULTS = {
-  notation: 'numpad',         // 'numpad' | 'letters'
+  notation: 'numpad',         // 'numpad' | 'letters' | 'icons'
   musicEnabled: false,        // default OFF per user request
   audioSource: 'url',         // 'custom' | 'url'  (bundled removed)
   audioCustomName: '',        // original filename for display (data lives in IndexedDB)
@@ -1752,6 +1769,12 @@ const BTN_COLORS = {
   LP: '#1A82DC', MP: '#DCAA1E', HP: '#C83232',
   LK: '#1A82DC', MK: '#DCAA1E', HK: '#C83232',
   PP: '#7864DC', KK: '#64DC78', DR: '#1ED2C8', DRC: '#1ED2C8',
+  // Multi-button tokens emitted by the new MULTI row (3P→PPP, 3K→KKK,
+  // plus MPHP/MKHK and LPMP/LKMK). Colored in the P/K family so the
+  // editor preview matches the in-game stacked glyphs. PP/KK kept for
+  // backward compat with combos saved before the LPMP/LKMK relabel.
+  PPP: '#7864DC', KKK: '#64DC78', MPHP: '#C83232', MKHK: '#C83232',
+  LPMP: '#7864DC', LKMK: '#64DC78',
   MW: '#DCAA1E', Oki: '#7C3AED', 'F.Kill': '#8B1A1A',
   CH: '#E6C200', PC: '#E08020', SHM: '#3CB44A',
   xx: '#252530',
@@ -1767,6 +1790,9 @@ const BTN_COLORS = {
   Throw: '#F97316',   // orange (Throw)
   DI:    '#EC4899',   // magenta (Drive Impact)
   DP:    '#06B6D4',   // teal (Drive Parry)
+  // Classic-only aux mechanic. Deep blue — mirrors Lua CN_BTN_COLORS.DRv
+  // (0xFF1A3C82). Drive Reversal.
+  DRv:   '#1A3C82',
 };
 
 // ── Tokens ─────────────────────────────────────────────────
@@ -4447,6 +4473,18 @@ function bgCandidates(name) {
   ];
 }
 
+// Foreground overlay candidates for the hover backdrop — sits stationary
+// on top of the zooming bg. Drop <Name>_fg.png into /portraits/.
+// No fallback chain — if nothing loads, the layer just doesn't render.
+function fgCandidates(name) {
+  const enc = encodeURIComponent(name);
+  return [
+    `/portraits/${enc}_fg.webp${CACHE_BUST}`,
+    `/portraits/${enc}_fg.png${CACHE_BUST}`,
+    `/portraits/${enc}_fg.jpg${CACHE_BUST}`,
+  ];
+}
+
 // Deterministic pseudo-random hue from name → unique silhouette tint
 function hueFromName(name) {
   let h = 0;
@@ -4541,6 +4579,34 @@ function CharacterBackdrop({ name }) {
   return React.createElement('div', {
     className: 'cp-art-bg',
     style: src ? { backgroundImage: `url("${src}")` } : { opacity: 0 },
+  });
+}
+
+// Stationary foreground PNG for the hover backdrop. Probes fgCandidates
+// off-screen; renders <img> only on successful load. Returns null
+// otherwise so characters without `_fg.*` cost zero DOM.
+function BgForeground({ name }) {
+  const [src, setSrc] = useState(null);
+  useEffect(() => {
+    const candidates = fgCandidates(name);
+    let cancelled = false;
+    let i = 0;
+    const tryNext = () => {
+      if (cancelled || i >= candidates.length) { setSrc(null); return; }
+      const url = candidates[i++];
+      const img = new Image();
+      img.onload  = () => { if (!cancelled) setSrc(url); };
+      img.onerror = () => { if (!cancelled) tryNext(); };
+      img.src = url;
+    };
+    setSrc(null);
+    tryNext();
+    return () => { cancelled = true; };
+  }, [name]);
+  if (!src) return null;
+  return React.createElement('img', {
+    src, alt: '', className: 'bg-art-fg',
+    loading: 'lazy', decoding: 'async',
   });
 }
 
@@ -5078,7 +5144,8 @@ function BgArtStage({ name }) {
       React.createElement(Portrait, {
         name: renderName,
         className: 'anim-bg-kenburns',
-      })
+      }),
+      React.createElement(BgForeground, { name: renderName })
     )
   );
 }
@@ -5828,7 +5895,9 @@ function NotationPill() {
     onClick: () => set(value),
     title: value === 'numpad'
       ? 'Numpad notation: 1–9 (FAT/FGC standard)'
-      : 'Letter notation: D/F/B/U + QCF/DP/HCB shorthand',
+      : value === 'letters'
+        ? 'Letter notation: D/F/B/U + QCF/DP/HCB shorthand'
+        : 'Icon notation: in-game direction/motion glyphs (needs the inputs/ image folder)',
     style: {
       padding: '4px 12px',
       fontSize: '11px',
@@ -5843,6 +5912,7 @@ function NotationPill() {
       transition: 'background 120ms, color 120ms',
     },
   }, label);
+  const divider = () => React.createElement('div', { style: { width: '1px', background: '#9a0f1f' } });
   return React.createElement('div', {
     style: {
       display: 'inline-flex',
@@ -5853,8 +5923,10 @@ function NotationPill() {
     },
   },
     half('Numpad', 'numpad'),
-    React.createElement('div', { style: { width: '1px', background: '#9a0f1f' } }),
+    divider(),
     half('Letters', 'letters'),
+    divider(),
+    half('Icons', 'icons'),
   );
 }
 
@@ -5874,14 +5946,28 @@ function TokenPalette({ slot, addToken, updateSlot, animated, controlScheme }) {
   // Pick the active palette grid. Defaults to Classic if the prop is
   // missing or any unrecognized value (forward-compat — future schemes
   // would explicitly pass their own identifier).
-  const attackGrid = controlScheme === 'modern' ? ATTACKS_MODERN : ATTACKS;
+  const isModern = controlScheme === 'modern';
+  const el = React.createElement;
+  const counter = slot.counter || 0;
 
-  // Legend definitions for the opaque modifier abbreviations.
+  // ── In-game color parity (from SF6_Overlay.lua) ─────────────
+  // CN_DIR_BG (#252535) is the base dome for directions, motions,
+  // multi-buttons and FF/BB. x2 and SA carry their own tints; aux
+  // mechanics read from BTN_COLORS. Stroke rings match Lua opts.stroke.
+  const DIR_COL = '#252535';
+  const X2_COL = '#3A2048', X2_TXT = '#CC88FF';
+  const SA_COL = '#5A4500', SA_TXT = '#FFDD55';
+
+  // Shared per-button props for the animated fly-in.
+  const bp = () => ({ style: fd(), extraClass: flyClass.trim() });
+
+  // ── Legend definitions for the opaque modifier abbreviations.
   // Keep in sync with Lua SF6_Overlay LEGEND_ROWS.
   const LEGEND = [
     { tag: 'DR',     def: 'Drive Rush' },
     { tag: 'DRC',    def: 'Drive Rush Cancel' },
     { tag: 'MW',     def: 'Micro-walk' },
+    { tag: 'DRv',    def: 'Drive Reversal' },
     { tag: 'CH',     def: 'Counter Hit' },
     { tag: 'PC',     def: 'Punish Counter' },
     { tag: 'SHM',    def: 'Shimmy' },
@@ -5891,132 +5977,140 @@ function TokenPalette({ slot, addToken, updateSlot, animated, controlScheme }) {
   ];
 
   return React.createElement('div', { className: 'flex flex-col gap-5' },
-    // ── Top row: 4-column palette grid (unchanged structure) ──
-    React.createElement('div', { className: 'grid grid-cols-[auto_auto_auto_auto] gap-7' },
-    React.createElement('div', null,
-      React.createElement('div', { className: flyClass + 'cp-label', style: fd() }, 'NUMPAD'),
-      React.createElement('div', { className: 'grid grid-cols-3 gap-[5px]' },
-        NUMPAD.map(n => React.createElement(NumpadBtn, {
-          key: n, label: n,
+    // ── Pad: 5 column-groups, L→R order matching SF6_Overlay.lua ──
+    //   Numpad(+multi) → P/K Attacks → Motions+SA → Aux. flex-wrap so
+    //   the strip reflows on narrow viewports instead of overflowing.
+    el('div', { className: 'flex flex-wrap gap-12 items-start' },
+
+    // ════════════════════════════════════════════════════════════
+    // LEFT CLUSTER — directions + P/K share ONE grid so P/K sits
+    // immediately right of the numpad, the '>' separator sits under
+    // the kicks, and the multi-button row spans beneath both. Fixed
+    // 50px columns keep the domes tightly packed (matching in-game)
+    // instead of stretching to fill the flex row.
+    //   row1: labels      row2: 789 | LP MP HP    row3: 456 | LK MK HK
+    //   row4: 123 | >      row5: PP KK MPHP MKHK 3P 3K
+    // ════════════════════════════════════════════════════════════
+    (() => {
+      const leftCols = isModern ? 7 : 6;
+      const dirItems = [['7',2,1],['8',2,2],['9',2,3],['4',3,1],['5',3,2],['6',3,3],['1',4,1],['2',4,2],['3',4,3]];
+      const pkItems = isModern
+        ? [['L',2,4],['SP',2,5],['DP',2,6],['DI',2,7],['M',3,4],['H',3,5],['Auto',3,6],['Throw',3,7]]
+        : [['LP',2,4],['MP',2,5],['HP',2,6],['LK',3,4],['MK',3,5],['HK',3,6]];
+      const multiItems = [['LPMP','LPMP',1],['LKMK','LKMK',2],['MPHP','MPHP',3],['MKHK','MKHK',4],['3P','PPP',5],['3K','KKK',6]];
+      return el('div', { style: { display: 'grid', gridTemplateColumns: `repeat(${leftCols}, 50px)`, gap: '8px', justifyContent: 'start', alignItems: 'start' } },
+        el('div', { className: flyClass + 'cp-label', style: { ...fd(), gridColumn: '1 / 4', gridRow: 1 } }, 'NUMPAD'),
+        el('div', { className: flyClass + 'cp-label', style: { ...fd(), gridColumn: `4 / ${leftCols + 1}`, gridRow: 1 } }, isModern ? 'ATTACKS · MODERN' : 'ATTACKS'),
+        // Directions
+        ...dirItems.map(([n, r, c]) => el(DomeBtn, {
+          key: 'd' + n, label: n, color: DIR_COL, translate: true,
+          style: { ...fd(), gridColumn: c, gridRow: r }, extraClass: flyClass.trim(),
           onClick: () => addToken(tokenForCell(n, 'numpad')),
-          extraClass: flyClass.trim(), style: fd(),
+        })),
+        // P/K attacks (fist/foot icons via AttackBtn)
+        ...pkItems.map(([lbl, r, c]) => el(AttackBtn, {
+          key: 'pk' + lbl, label: lbl,
+          style: { ...fd(), gridColumn: c, gridRow: r }, extraClass: flyClass.trim(),
+          onClick: () => addToken(tokenForCell(lbl, 'attack', counter)),
+        })),
+        // '>' chain separator — under the kicks, spanning the P/K width.
+        el('button', {
+          onClick: () => addToken({ t: 'sep' }),
+          className: cx('cp-btn3d cp-btn-numpad', flyClass.trim()),
+          style: { ...fd(), gridColumn: `4 / ${leftCols + 1}`, gridRow: 4, width: '100%', height: '50px', color: '#f5c518', borderColor: '#9a7c0a' },
+          title: 'Insert chain separator (>)',
+        }, '>'),
+        // Multi-button row — single row of 6 beneath directions + P/K.
+        // Explicit tokens match the Lua values (3P→PPP, 3K→KKK). Each
+        // shows a stacked fist/foot glyph (StackGlyph) like the in-game pad.
+        ...multiItems.map(([lbl, tok, c]) => el(DomeBtn, {
+          key: 'm' + lbl, label: lbl, color: DIR_COL, stack: MULTI_STACK[tok],
+          style: { ...fd(), gridColumn: c, gridRow: 5 }, extraClass: flyClass.trim(),
+          onClick: () => addToken({ t: 'btn', v: tok }),
         }))
+      );
+    })(),
+
+    // ════════════════════════════════════════════════════════════
+    // RIGHT CLUSTER — motions+SA grid and aux grid packed together
+    // (small gap), mirroring the in-game right half. Fixed columns.
+    // ════════════════════════════════════════════════════════════
+    el('div', { className: 'flex gap-6 items-start' },
+      // ── Motions + Super Arts (3 cols × 5 rows) ──
+      //   col1: 236/41236/[4]6/[2]8/720   col2: 214/623/63214/360F/360B
+      //   col3(SA): SA1..SA3-2   (x2 moved to the aux block)
+      el('div', null,
+        el('div', { className: flyClass + 'cp-label', style: fd() }, 'MOTIONS · SA'),
+        el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 50px)', gridTemplateRows: 'repeat(5, auto)', gap: '8px' } },
+          [
+            ['236', 1, 1, 'm'], ['41236', 1, 2, 'm'], ['[4]6', 1, 3, 'm'], ['[2]8', 1, 4, 'm'], ['720', 1, 5, 'r'],
+            ['214', 2, 1, 'm'], ['623', 2, 2, 'm'], ['63214', 2, 3, 'm'], ['360F', 2, 4, 'm'], ['360B', 2, 5, 'm'],
+            ['SA1', 3, 1, 'sa'], ['SA2', 3, 2, 'sa'], ['SA2-2', 3, 3, 'sa'], ['SA3', 3, 4, 'sa'], ['SA3-2', 3, 5, 'sa'],
+          ].map(([lbl, c, r, kind]) => {
+            const isSa = kind === 'sa';
+            const isX2 = kind === 'x2';
+            return el(DomeBtn, {
+              key: lbl, label: lbl,
+              color: isSa ? SA_COL : isX2 ? X2_COL : DIR_COL,
+              textColor: isSa ? SA_TXT : isX2 ? X2_TXT : undefined,
+              translate: kind === 'm',
+              style: { ...fd(), gridColumn: c, gridRow: r }, extraClass: flyClass.trim(),
+              onClick: () => addToken(isSa ? tokenForCell(lbl, 'sa') : tokenForCell(lbl, 'motion')),
+            });
+          })
+        )
       ),
-      // Spacer / chunk separator. Inserts an explicit { t: 'sep' } token
-      // that renders as '>' between chunks. The auto-renderer also injects
-      // '>' between chunks, but only when token grammar implies one — this
-      // button forces a separator when the user wants to break a chain
-      // manually (e.g. between two attack chunks). Renderer below suppresses
-      // its automatic '>' adjacent to a 'sep' token to avoid '> >'.
-      React.createElement('button', {
-        onClick: () => addToken({ t: 'sep' }),
-        className: cx('cp-btn3d cp-btn-numpad', flyClass.trim()),
-        style: { ...fd(), marginTop: '5px', width: '100%', gridColumn: '1 / -1' },
-        title: 'Insert chain separator (>)',
-      }, '>')
-    ),
-    React.createElement('div', null,
-      React.createElement('div', { className: flyClass + 'cp-label', style: fd() }, 'MOTIONS'),
-      React.createElement('div', { className: 'grid grid-cols-2 gap-[5px]' },
-        MOTIONS.map(m => React.createElement(MotionBtn, {
-          key: m, label: m,
-          onClick: () => addToken(tokenForCell(m, 'motion')),
-          extraClass: flyClass.trim(), style: fd(),
-        }))
-      )
-    ),
-    React.createElement('div', null,
-      React.createElement('div', { className: flyClass + 'cp-label', style: fd() },
-        controlScheme === 'modern' ? 'ATTACKS · MODERN' : 'ATTACKS'),
-      React.createElement('div', { className: 'grid grid-cols-4 gap-[7px]' },
-        attackGrid.flatMap((row, r) => {
-          const cells = row.map((label, c) => {
-            if (label) {
-              return React.createElement(AttackBtn, {
-                key: `${r}-${c}`, label,
-                onClick: () => addToken(tokenForCell(label, 'attack', slot.counter)),
-                extraClass: flyClass.trim(), style: fd(),
-              });
-            }
-            // Empty cell on the Oki row (col 3, between F.Kill and SHM)
-            // becomes the counter widget — sits right next to the Oki
-            // button it modifies. Mirrors Lua overlay behavior:
-            // range -120..+120, click value to reset to 0, color reflects
-            // sign. Counter value is baked into the Oki token at click time.
-            if (r === 4 && c === 2) {
-              const ctr = slot.counter || 0;
-              const ctrColor = ctr > 0 ? '#5dd870' : ctr < 0 ? '#ff5e5e' : '#9aa3b2';
-              const ctrLabel = (ctr > 0 ? '+' : '') + ctr;
-              return React.createElement('div', {
-                key: `${r}-${c}`,
-                className: flyClass.trim(),
-                style: { ...fd(), display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '3px' },
-              },
-                React.createElement('div', {
-                  style: { fontSize: '8px', fontFamily: 'JetBrains Mono, monospace', color: '#9aa3b2', letterSpacing: '0.1em' },
-                }, 'OKI CTR'),
-                React.createElement('div', { style: { display: 'flex', gap: '2px', alignItems: 'center' } },
-                  React.createElement('button', {
-                    onClick: () => updateSlot({ counter: Math.max(-120, ctr - 1) }),
-                    style: {
-                      width: '14px', height: '22px',
-                      background: '#1a1f2b', border: '1px solid #2c3445',
-                      color: '#f0eee6', borderRadius: '3px', cursor: 'pointer',
-                      fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', fontWeight: '700',
-                      padding: 0, lineHeight: 1,
-                    },
-                  }, '<'),
-                  React.createElement('button', {
-                    onClick: () => updateSlot({ counter: 0 }),
-                    title: 'Click to reset to 0',
-                    style: {
-                      minWidth: '24px', height: '22px', padding: '0 4px',
-                      background: '#0d0d18', border: '1px solid #2a2a3a',
-                      color: ctrColor, borderRadius: '3px', cursor: 'pointer',
-                      fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', fontWeight: '700',
-                      lineHeight: 1,
-                    },
-                  }, ctrLabel),
-                  React.createElement('button', {
-                    onClick: () => updateSlot({ counter: Math.min(120, ctr + 1) }),
-                    style: {
-                      width: '14px', height: '22px',
-                      background: '#1a1f2b', border: '1px solid #2c3445',
-                      color: '#f0eee6', borderRadius: '3px', cursor: 'pointer',
-                      fontFamily: 'JetBrains Mono, monospace', fontSize: '11px', fontWeight: '700',
-                      padding: 0, lineHeight: 1,
-                    },
-                  }, '>'),
-                ),
-              );
-            }
-            return React.createElement('div', { key: `${r}-${c}` });
-          });
-          // Insert separator after row 1 (kicks) — splits the
-          // standard punches/kicks from the system buttons
-          // (PP/KK/xx, DR/DRC/MW, Oki/F.Kill).
-          if (r === 1) {
-            cells.push(React.createElement('div', {
-              key: 'sep',
-              className: flyClass + 'cp-attack-sep',
-              style: fd(),
-            }));
-          }
-          return cells;
-        })
-      )
-    ),
-    React.createElement('div', null,
-      React.createElement('div', { className: flyClass + 'cp-label', style: fd() }, 'SUPERS'),
-      React.createElement('div', { className: 'grid grid-cols-1 gap-[5px]' },
-        SAS.map(s => React.createElement(SaBtn, {
-          key: s, label: s,
-          onClick: () => addToken(tokenForCell(s, 'sa')),
-          extraClass: flyClass.trim(), style: fd(),
-        }))
+      // ── Aux mechanics (3 cols × 5 rows) + Oki counter ──
+      //   col1: DR/FF/BB/xx/x2   col2: DRC/DI/DP/DRv/MW   col3: Oki/F.Kill/CH/PC/SHM
+      el('div', null,
+        el('div', { className: flyClass + 'cp-label', style: fd() }, 'AUX'),
+        el('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(3, 50px)', gridTemplateRows: 'repeat(5, auto)', gap: '8px' } },
+          [
+            ['DR', 1, 1, null, BTN_COLORS.DR, '#40B8FF', null],
+            ['FF', 1, 2, { t:'dir', v:'66' }, DIR_COL, null, null],
+            ['BB', 1, 3, { t:'dir', v:'44' }, DIR_COL, null, null],
+            ['xx', 1, 4, null, '#252530', null, '#9aa3b2'],
+            ['x2', 1, 5, { t:'dir', v:'x2' }, X2_COL, null, X2_TXT],
+            ['DRC', 2, 1, null, BTN_COLORS.DRC, null, null],
+            ['DI', 2, 2, null, BTN_COLORS.DI, '#FFE000', null],
+            ['DP', 2, 3, null, BTN_COLORS.DP, null, null],
+            ['DRv', 2, 4, null, BTN_COLORS.DRv, '#C83232', null],
+            ['MW', 2, 5, null, BTN_COLORS.MW, null, null],
+            ['Oki', 3, 1, null, BTN_COLORS.Oki, null, null],
+            ['F.Kill', 3, 2, null, BTN_COLORS['F.Kill'], null, '#FF9999'],
+            ['CH', 3, 3, null, BTN_COLORS.CH, null, null],
+            ['PC', 3, 4, null, BTN_COLORS.PC, null, null],
+            ['SHM', 3, 5, null, BTN_COLORS.SHM, null, null],
+          ].map(([lbl, c, r, tok, color, ring, txt]) =>
+            el(DomeBtn, {
+              key: lbl, label: lbl, color, ring, textColor: txt,
+              style: { ...fd(), gridColumn: c, gridRow: r }, extraClass: flyClass.trim(),
+              onClick: () => addToken(tok || tokenForCell(lbl, 'attack', counter)),
+            }))
+        ),
+        // Oki counter stepper — mirrors the Lua counter bar. Oki/F.Kill
+        // bake this value at click time. Range -120..+120; click value → 0.
+        el('div', { className: flyClass.trim(), style: { ...fd(), marginTop: '8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' } },
+          el('div', { style: { fontSize: '8px', fontFamily: 'JetBrains Mono, monospace', color: '#9aa3b2', letterSpacing: '0.1em' } }, 'OKI CTR'),
+          el('div', { style: { display: 'flex', gap: '3px', alignItems: 'center' } },
+            el('button', {
+              onClick: () => updateSlot({ counter: Math.max(-120, counter - 1) }),
+              style: { width: '16px', height: '24px', background: '#1a1f2b', border: '1px solid #2c3445', color: '#f0eee6', borderRadius: '3px', cursor: 'pointer', fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', fontWeight: '700', padding: 0, lineHeight: 1 },
+            }, '<'),
+            el('button', {
+              onClick: () => updateSlot({ counter: 0 }),
+              title: 'Click to reset to 0',
+              style: { minWidth: '30px', height: '24px', padding: '0 5px', background: '#0d0d18', border: '1px solid #2a2a3a', color: counter > 0 ? '#5dd870' : counter < 0 ? '#ff5e5e' : '#9aa3b2', borderRadius: '3px', cursor: 'pointer', fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', fontWeight: '700', lineHeight: 1 },
+            }, (counter > 0 ? '+' : '') + counter),
+            el('button', {
+              onClick: () => updateSlot({ counter: Math.min(120, counter + 1) }),
+              style: { width: '16px', height: '24px', background: '#1a1f2b', border: '1px solid #2c3445', color: '#f0eee6', borderRadius: '3px', cursor: 'pointer', fontFamily: 'JetBrains Mono, monospace', fontSize: '12px', fontWeight: '700', padding: 0, lineHeight: 1 },
+            }, '>'),
+          )
+        )
       )
     )
-    ),  // ── close inner grid ──
+    ),  // ── close pad ──
 
     // ── Legend block ──
     // Defines the opaque modifier abbreviations. Two-column grid keeps
@@ -6824,16 +6918,99 @@ function SaBtn({ label, onClick, style, extraClass }) {
 // Sanwa-style attack button: black bezel + colored dome + curved
 // highlight. The dome is a child span so it can press independently.
 // Note this button does NOT use `cp-btn3d` — Sanwa look replaces it.
-// Punch/kick icons — loaded from files next to index.html.
-// Drop fist.png and foot.png into the same folder as this HTML file.
-// Relative paths work because the browser resolves them against the
-// page's URL. If you rename the files, update the paths here.
-const ICON_FIST = "fist.png";
-const ICON_FOOT = "foot.png";
+// Input glyphs — loaded from the `inputs/` folder next to this HTML
+// file. Drop ALL the PNGs from inputs.zip there (fist/foot + the
+// direction/motion glyphs). Relative paths resolve against the page URL.
+const GLYPH_DIR = "inputs/";
+const ICON_FIST = GLYPH_DIR + "fist.png";
+const ICON_FOOT = GLYPH_DIR + "foot.png";
 const BTN_ICONS = {
   LP: ICON_FIST, MP: ICON_FIST, HP: ICON_FIST,
   LK: ICON_FOOT, MK: ICON_FOOT, HK: ICON_FOOT,
 };
+
+// Direction + motion glyph map (token → PNG filename, sans extension).
+// Used in the 'icons' notation mode to render the in-game arrow/motion
+// glyphs instead of text. Numpad digits map to the 9 directions; the
+// motions map to QCF/QCB/HCF/HCB/DP and the two charge glyphs. Tokens
+// NOT listed here (720/360F/360B/x2/SA) intentionally fall back to text,
+// matching the in-game overlay (Lua `raw` flag).
+const GLYPH_MAP = {
+  // directions (facing right / P1 default)
+  '7': 'UB', '8': 'U', '9': 'UF',
+  '4': 'B',  '5': 'N', '6': 'F',
+  '1': 'DB', '2': 'D', '3': 'DF',
+  // motions
+  '236': 'QCF', '214': 'QCB',
+  '41236': 'HCF', '63214': 'HCB',
+  '623': 'DP',
+  '[4]6': '[B]F', '[2]8': '[D]U',
+  // 360F/360B share the single 360 spin glyph (no F/B-specific PNG).
+  // 720 has no glyph and stays as text.
+  '360F': '360', '360B': '360',
+};
+// Tokens whose glyph is the horizontal mirror of the shared PNG. 360B is
+// 360F flipped (back-spin vs forward-spin) — done live with scaleX(-1)
+// rather than a second asset.
+const FLIP_GLYPHS = { '360B': true };
+// Build a glyph URL for a token, or null if none exists. encodeURI keeps
+// '/' but escapes the '[' ']' in the charge-motion filenames so the
+// browser fetches them correctly.
+function glyphForToken(label) {
+  const name = GLYPH_MAP[label];
+  return name ? encodeURI(GLYPH_DIR + name + '.png') : null;
+}
+
+// Strength palette (Light / Medium / Heavy) — matches the P/K dome
+// colors and the Lua draw_stack_glyph tint order.
+const STRENGTH_COLORS = ['#1A82DC', '#DCAA1E', '#C83232'];
+// Multi-button → stacked-glyph composition, keyed by TOKEN value so both
+// the pad and the sequence preview can look it up. kind P/K picks fist/
+// foot; count = chips; off = start index into STRENGTH_COLORS. Mirrors
+// the Lua STACK_TOKENS table. PP/KK kept for combos saved before the
+// LPMP/LKMK relabel.
+const MULTI_STACK = {
+  LPMP: { kind: 'P', count: 2, off: 0 },
+  LKMK: { kind: 'K', count: 2, off: 0 },
+  MPHP: { kind: 'P', count: 2, off: 1 },
+  MKHK: { kind: 'K', count: 2, off: 1 },
+  PPP:  { kind: 'P', count: 3, off: 0 },
+  KKK:  { kind: 'K', count: 3, off: 0 },
+  PP:   { kind: 'P', count: 2, off: 0 },
+  KK:   { kind: 'K', count: 2, off: 0 },
+};
+// Single-strength P/K tokens (for fist/foot rendering in icon mode).
+const PK_SINGLE = /^[LMH][PK]$/;
+// Stacked fist/foot glyph — N strength-colored chips laid out
+// HORIZONTALLY (left→right) with a slight overlap, each holding the
+// white fist/foot icon. Recreates the in-game multi-button glyphs.
+// chip/step are sizable so the same component serves both the 50px pad
+// domes and the 30px preview pills.
+function StackGlyph({ kind, count, off, chip = 22, step = 9 }) {
+  const icon = kind === 'K' ? ICON_FOOT : ICON_FIST;
+  const box = chip + step * (count - 1);
+  const chips = [];
+  for (let i = 0; i < count; i++) {
+    const color = STRENGTH_COLORS[Math.min(off + i, STRENGTH_COLORS.length - 1)];
+    chips.push(React.createElement('span', {
+      key: i,
+      style: {
+        position: 'absolute', left: step * i, top: 0,
+        width: chip, height: chip, borderRadius: '50%',
+        background: sanwaDomeGradient(color),
+        boxShadow: 'inset 0 -2px 3px rgba(0,0,0,0.4), 0 1px 2px rgba(0,0,0,0.6)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        zIndex: i + 1,
+      },
+    }, React.createElement('img', {
+      src: icon, alt: '',
+      style: { width: chip * 0.72, height: chip * 0.72, pointerEvents: 'none' },
+    })));
+  }
+  return React.createElement('span', {
+    style: { position: 'relative', display: 'inline-block', width: box, height: chip, zIndex: 2 },
+  }, ...chips);
+}
 
 function AttackBtn({ label, onClick, style, extraClass }) {
   const color = BTN_COLORS[label] || '#3a4050';
@@ -6873,6 +7050,59 @@ function AttackBtn({ label, onClick, style, extraClass }) {
     )
   );
 }
+// Generic circular arcade-button dome — the pixel-faithful match to the
+// in-game `arcade_button` used for directions, motions, multi-buttons,
+// Super Arts and the aux mechanics. Reuses the exact Sanwa bezel/dome/
+// gloss markup as AttackBtn (.cp-btn-attack + .cp-btn-attack-dome +
+// sanwaDomeGradient) so every pad button shares one physical look.
+//   color     — dome base color (hex). Defaults to CN_DIR_BG (#252535).
+//   textColor — label color override (e.g. gold for SA, purple for x2).
+//   ring      — optional colored stroke ring (matches Lua opts.stroke:
+//               DR blue, DI yellow, DRv red).
+//   translate — when true, label respects the numpad/letters notation
+//               toggle (directions + motions); false for fixed labels
+//               (SA, aux mechanics, multi-buttons).
+function DomeBtn({ label, onClick, style, extraClass, color, textColor, ring, translate, stack }) {
+  const { notation } = useSettings();
+  const display = (translate && notation === 'letters') ? toLetterNotation(label) : label;
+  const domeColor = color || '#252535';
+  // Icon mode: directions + motions (translate=true) with a known glyph
+  // render the in-game PNG instead of text. Everything else (720/360F/
+  // 360B/x2/SA/aux) keeps its text label.
+  const glyph = (translate && notation === 'icons') ? glyphForToken(label) : null;
+  // Long labels (41236/63214/F.Kill/SA2-2/MPHP/...) need a smaller font
+  // to fit the 50px dome — mirrors the Lua fit_legend_font auto-shrink.
+  const len = display.length;
+  const fontSize = len >= 5 ? '8px' : len >= 4 ? '9px' : len >= 3 ? '10px' : '12px';
+  return React.createElement('button', {
+    onClick, style,
+    className: cx('cp-btn-attack', extraClass),
+  },
+    React.createElement('span', {
+      className: 'cp-btn-attack-dome',
+      style: {
+        background: sanwaDomeGradient(domeColor),
+        // Colored stroke ring drawn as an inset box-shadow on top of the
+        // dome's own inset shadows (Lua draws d2d.circle over the dome).
+        ...(ring ? { boxShadow: `inset 0 0 0 3px ${ring}, inset 0 -4px 6px rgba(0,0,0,0.45)` } : {}),
+      },
+    },
+      stack
+        // Multi-buttons (PP/KK/MPHP/MKHK/3P/3K) — stacked fist/foot
+        // chips, always shown (independent of the notation toggle).
+        ? React.createElement(StackGlyph, stack)
+        : glyph
+        ? React.createElement('img', {
+            src: glyph, alt: label,
+            style: { width: '36px', height: '36px', display: 'block', position: 'relative', zIndex: 2, pointerEvents: 'none', transform: FLIP_GLYPHS[label] ? 'scaleX(-1)' : undefined },
+          })
+        : React.createElement('span', {
+            className: 'cp-btn-attack-label',
+            style: { fontSize, color: textColor || 'white', lineHeight: 1, textAlign: 'center', padding: '0 2px' },
+          }, display)
+    )
+  );
+}
 function SeqCaret() {
   // Blinking vertical bar — pure CSS animation. Inline so we don't
   // pollute the global stylesheet with a tiny single-use rule.
@@ -6891,6 +7121,34 @@ function SeqCaret() {
 
 function TokenPill({ tok }) {
   const { notation } = useSettings();
+  const el = React.createElement;
+
+  // ── Icon mode: render glyphs in the sequence box to match the pad ──
+  // Only direction/motion tokens with a known glyph, the stacked multi-
+  // buttons, and single P/K get icons; everything else (Oki/SA/aux/xx/
+  // sep, and glyph-less dirs like 66/44/x2) falls through to text below.
+  if (notation === 'icons') {
+    if (tok.t === 'dir') {
+      const g = glyphForToken(tok.v);
+      if (g) {
+        return el('span', { className: 'cp-token', style: { background: '#252535' } },
+          el('img', { src: g, alt: tok.v, style: { width: '24px', height: '24px', pointerEvents: 'none', transform: FLIP_GLYPHS[tok.v] ? 'scaleX(-1)' : undefined } }));
+      }
+    } else if (tok.t === 'btn') {
+      const st = MULTI_STACK[tok.v];
+      if (st) {
+        return el('span', { style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', height: '30px', minWidth: '30px' } },
+          el(StackGlyph, { ...st, chip: 18, step: 6 }));
+      }
+      if (PK_SINGLE.test(tok.v)) {
+        const kind = tok.v.endsWith('K') ? 'K' : 'P';
+        const c = BTN_COLORS[tok.v] || '#666';
+        return el('span', { className: 'cp-token', style: { background: attackGradient(c) } },
+          el('img', { src: kind === 'K' ? ICON_FOOT : ICON_FIST, alt: tok.v, style: { width: '22px', height: '22px', pointerEvents: 'none' } }));
+      }
+    }
+  }
+
   if (tok.t === 'btn') {
     // Oki tokens come from the editor as "[+5:Oki]" / "[-3:Oki]" / "[0:Oki]"
     // (matching the Lua overlay format). Render as a purple Oki pill
@@ -9597,6 +9855,7 @@ function SettingsDialog({ current, onClose, onSave, toast, gamepadStore, gamepad
           options: [
             { value: 'numpad', label: 'Numpad' },
             { value: 'letters', label: 'Letters' },
+            { value: 'icons', label: 'Icons' },
           ],
           onChange: (v) => set({ notation: v }),
         }),
