@@ -20,8 +20,8 @@ Real-time training and match overlay for Street Fighter 6.
 
 For the impatient. Each step is detailed later in this guide.
 
-1. Unzip `NappuSakku-main.zip` anywhere convenient (Desktop, Downloads, Documents).
-2. Double-click `install.bat`. Everything is installed automatically: REFramework, the d2d plugin, the overlay, and frame data from FAT.
+1. Unzip `NappuSakku-main.zip` anywhere convenient (Desktop, Downloads, Documents, doesn't matter as long as its not your Street Fighter 6 folder).
+2. Double-click `install.bat`. Everything is installed automatically: REFramework, the d2d plugin, the overlay, the roster script, and frame data from FAT.
 3. Launch SF6. Press **Insert** in-game to confirm the overlay loaded — look for the **Display** and **Combo Editor** tabs.
 4. Launch the editor from your desktop shortcut (created by the installer) or by double-clicking `editor\run_editor.bat`. Your browser opens at `http://localhost:8765`.
 
@@ -38,17 +38,18 @@ The SF6 Overlay is a REFramework-based mod that adds a real-time training overla
 - **Character profile text** under each fighter's name for personal play notes.
 - **Health-bar tick marks** at 10% intervals so you can see exact damage thresholds and CA timing.
 - **Modern control scheme supported.**
+- **SF6_Roster_Export.lua.** reads the current roster and saves it to a json file in 'Street Fighter 6\reframework\data'
 - ...and more.
 
 ---
 
 ## Automatic Roster Updates
 
-As of this release, new characters are picked up automatically — you don't need a code update from me when a new fighter drops.
+As of this release, new characters are picked up automatically — you don't need a code update from this repo or Nexus mods when a new fighter drops.
 
 Here's the flow:
 
-1. On game launch, the overlay script reads the current roster and writes it to a JSON file in `<SF6>\reframework\data\`.
+1. On game launch, a roster.lua the overlay script reads the current roster and writes it to a JSON file in `<SF6>\reframework\data\`.
 2. `server.py` and `index.html` read that roster on startup and adjust the Combo Editor and the web app's character page for any new characters.
 3. **Launch order matters:** start the game first, then start the web app, so the roster file is written before the web app reads it.
 4. Saving a combo in either the web app or the in-game editor creates the character's folder under `<SF6>\reframework\data\sf6_framedata\`.
@@ -99,11 +100,15 @@ Downloads the latest `reframework-d2d` release from cursey's GitHub. Extracts th
 
 Copies the overlay into `<SF6>\reframework\autorun\SF6_Overlay.lua`. This is the actual mod file.
 
-### 6. Frame data download
+### 6. Roster script copy
+
+Copies SF6_export_Roster.lua to `<SF6>\reframework\autorun\SF6_Roster_Export.lua` This file exports the current roster to a .json 5 seconds after the game has launched.
+
+### 7. Frame data download
 
 Runs the frame data updater to pull the current frame data from FAT (Frame Assistant Tool) on GitHub. Creates `<SF6>\reframework\data\sf6_framedata\<CharacterName>\framedata.json` for each character (one folder per character). If the download fails (no internet, GitHub down, corporate firewall), the installer automatically falls back to bundled offline frame data, current as of the package's release date.
 
-### 7. Desktop shortcut (opt-in)
+### 8. Desktop shortcut (opt-in)
 
 At the end, you're asked whether to create a desktop shortcut for the SF6 Overlay Editor. The shortcut points at `editor\run_editor.bat` inside your unzipped folder, and launches without a visible console window.
 
@@ -111,8 +116,10 @@ At the end, you're asked whether to create a desktop shortcut for the SF6 Overla
 > - `<SF6>\dinput8.dll` (REFramework)
 > - `<SF6>\reframework\plugins\reframework-d2d.dll` (d2d plugin)
 > - `<SF6>\reframework\autorun\SF6_Overlay.lua` (the overlay)
+> - `<SF6>\reframework\autorun\SF6_Roster_Export.lua` (script for exporting the latest roster)
+> - `<SF6>\reframework\data\sf6_roster.json` (JSON file the roster gets written to 5 seconds after the game has launched)
 > - `<SF6>\reframework\data\sf6_framedata\<CharacterName>\framedata.json` (frame data, one folder per character)
->
+> - `<SF6>\reframework\images` (Folder containing PNGs for the in-game overlay)
 > The installer does **not** touch game files, save data, or anything outside the `reframework\` subfolder.
 
 ---
@@ -142,19 +149,18 @@ At the end, you're asked whether to create a desktop shortcut for the SF6 Overla
 
 1. Launch Street Fighter 6 normally through Steam.
 2. Once at the main menu, press **Insert** on your keyboard to open the REFramework menu.
-3. Look for the overlay's menu items: you should see the **Display** and **Combo Editor** tabs. If they're there, the overlay loaded successfully.
+3. Look for the overlay's menu items at the top of your screen: you should see the **Display** and **Combo Editor** tabs. If they're there, the overlay loaded successfully.
 
 If the overlay does not appear, open the REFramework **Script Runner** (in the REFramework menu) and check whether `SF6_Overlay.lua` loaded or threw an error.
 
-> **TECH NOTE:** REFramework auto-unloads Lua scripts during online ranked matches. This is intentional anti-cheat safety built into REFramework itself — the overlay package does not override it. The overlay will go dark in ranked and reappear automatically in training, casual, replays, and offline modes.
+> **TECH NOTE:** REFramework auto-unloads Lua scripts during online ranked matches. This is intentional anti-cheat safety built into REFramework itself — the overlay package does not override it. The overlay will freeze in online modes (ranked/world tour/casual) and function automatically in training, replays, and other offline modes.
 
 ---
 
 ## Launching the Web Editor
 
-The editor lets you author combos while watching a linked video, write play notes, and save resource links for each character. You can run the overlay without ever opening the editor, but the editor bridges the gap between research and training. **Combos authored in the editor appear in the in-game overlay without requiring a game restart** (you may need to re-select the combo in SF6 if you've edited it).
+The editor lets you author combos while watching a linked video, write notes, and save resource links for each character. You can run the overlay without ever opening the editor, but the editor bridges the gap between research and training. **Combos authored in the editor appear in the in-game overlay without requiring a game restart**
 
-Remember the launch order from [Automatic Roster Updates](#automatic-roster-updates): start the game first, then the web app.
 
 ### Easy way
 
