@@ -209,14 +209,41 @@ def get_framedata_path() -> Path:
 
     return Path(DEFAULT_FRAMEDATA)
 
-# Roster mirrors the Lua script's ROSTER constant. Order matters for
-# display purposes (groups originals vs. DLC).
-ROSTER = [
+# Fallback only. The authoritative roster is sf6_roster.json, exported by the
+# Lua overlay (sf6_roster_export.lua) on game launch from SF6's live master
+# data, so a newly released character appears here with no code edit. This list
+# is used only if that file is missing or malformed. Order here is display-only.
+ROSTER_FALLBACK = [
     "Ryu", "Luke", "Kimberly", "Chun-Li", "Manon", "Zangief", "JP", "Dhalsim",
     "Cammy", "Ken", "Dee Jay", "Lily", "AKI", "Rashid", "Blanka", "Juri",
     "Marisa", "Guile", "Ed", "E.Honda", "Jamie", "Akuma", "Sagat", "M.Bison",
     "Terry", "Mai", "Elena", "C.Viper", "Alex",
 ]
+
+
+def _roster_path() -> Path:
+    """reframework/data/sf6_roster.json — exported by the Lua overlay.
+
+    Lives one level above the framedata folder (same place as
+    sf6_overlay_config.json / sf6_hotkeys.json).
+    """
+    return get_framedata_path().parent / "sf6_roster.json"
+
+
+def load_roster() -> list[str]:
+    """Read the Lua-exported roster; fall back to ROSTER_FALLBACK on any error.
+
+    Read once at import. "Restart the server after a new character is added" is
+    the accepted refresh model, so we do not re-read per request.
+    """
+    try:
+        data = json.loads(_roster_path().read_text(encoding="utf-8-sig"))
+        names = [c["name"] for c in data["characters"] if c.get("name")]
+        if names:
+            return names
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError, OSError):
+        pass
+    return ROSTER_FALLBACK
 
 
 # ── Settings ──────────────────────────────────────────────────
@@ -231,6 +258,12 @@ def load_settings() -> dict:
 
 def save_settings(s: dict) -> None:
     SETTINGS_PATH.write_text(json.dumps(s, indent=2), encoding="utf-8")
+
+
+# Resolve the roster once, AFTER load_settings/save_settings/get_framedata_path
+# are all defined (load_roster -> get_framedata_path -> load_settings). Every
+# `name in ROSTER` guard and the backup collector read this module-level list.
+ROSTER = load_roster()
 
 
 # get_framedata_path() is defined above (Steam autodetect chain).
