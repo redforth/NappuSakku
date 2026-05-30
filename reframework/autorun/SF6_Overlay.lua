@@ -127,6 +127,49 @@ local ROSTER = {
 local ROSTER_INDEX = {}
 for i, n in ipairs(ROSTER) do ROSTER_INDEX[n] = i end
 
+-- ── DYNAMIC ROSTER MERGE (reads sf6_roster.json from sf6_roster_export.lua) ──
+-- Globals (not locals) so they don't consume main-chunk local slots and are
+-- resolved by name at call time (no forward-reference nil trap). They close
+-- over ESF_MAP/ROSTER/ROSTER_INDEX as upvalues, which are declared above.
+_sf6_roster = { last_try = -1e9 }
+
+function _sf6_merge_roster()
+    local raw
+    for _, p in ipairs({ "sf6_roster.json", "reframework/data/sf6_roster.json" }) do
+        local f = io.open(p, "r")
+        if f then raw = f:read("*a"); f:close(); break end
+    end
+    if not raw then return false end
+    local ok, parsed = pcall(json.load_string, raw)
+    if not (ok and type(parsed) == "table" and type(parsed.characters) == "table") then
+        return false
+    end
+    for _, c in ipairs(parsed.characters) do
+        if type(c) == "table" and c.esf and c.name then
+            local esf, name = tostring(c.esf), tostring(c.name)
+            ESF_MAP[esf] = name                  -- add or override
+            if not ROSTER_INDEX[name] then        -- new char -> grow roster
+                ROSTER[#ROSTER + 1] = name
+                ROSTER_INDEX[name]  = #ROSTER
+            end
+        end
+    end
+    return true
+end
+
+-- Rate-limited re-read for an unmapped esf seen mid-session (e.g. overlay
+-- loaded before the exporter's ~5s-deferred write). Bounded to one small
+-- file read per cooldown while an unknown character is on screen.
+function _sf6_relookup_esf(esf)
+    if ESF_MAP[esf] then return end
+    local now = os.clock()
+    if (now - _sf6_roster.last_try) < 3.0 then return end  -- 3s cooldown
+    _sf6_roster.last_try = now
+    pcall(_sf6_merge_roster)
+end
+
+_sf6_merge_roster()   -- initial load-time merge
+
 -- ── DEFAULT CONFIG ───────────────────────────────────────────
 local cfg = {
     config_version      = 2,       -- bump when a one-time cfg migration is added
@@ -2278,6 +2321,7 @@ local function update_players_inner()
         end
         local esf  = fobj and find_esf(fobj, 0, 3) or nil
         if esf then
+            if not ESF_MAP[esf] then _sf6_relookup_esf(esf) end
             players[slot].esf  = esf
             players[slot].name = ESF_MAP[esf] or ("Unknown " .. esf)
             -- Auto-sync the profiles menu to P1's detected character.
