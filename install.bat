@@ -179,6 +179,17 @@ if errorlevel 1 (
 )
 echo Done.
 
+REM Companion autorun helper: sf6_roster_export.lua. Lives in the same
+REM autorun folder as the overlay. Non-fatal - the overlay still runs if
+REM this auxiliary script is missing.
+echo Copying sf6_roster_export.lua...
+copy /Y "%~dp0reframework\autorun\sf6_roster_export.lua" "!DEST_LUA!\" >nul
+if errorlevel 1 (
+    echo WARNING: failed to copy sf6_roster_export.lua ^(roster export helper^).
+) else (
+    echo Done.
+)
+
 REM -- 5b. Glyph icons (buttons + direction/motion PNGs) -----
 REM The overlay loads icons via d2d.Image.new("<name>.png"), which resolves
 REM relative to <SF6_DIR>\reframework\images\. Two icon families exist:
@@ -298,6 +309,7 @@ echo Installed files:
 echo   !SF6_DIR!\dinput8.dll                              (REFramework)
 echo   !SF6_DIR!\reframework\plugins\reframework-d2d.dll  (d2d plugin)
 echo   !DEST_LUA!\SF6_Overlay.lua                          (overlay)
+echo   !DEST_LUA!\sf6_roster_export.lua                    (roster export helper)
 echo   !DEST_IMG!\*.png                                    (button + direction glyphs)
 echo   %~dp0editor\inputs\*.png                            (editor glyphs, in-place)
 echo   !DEST_DATA!\^<Character^>\framedata.json             (frame data)
