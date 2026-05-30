@@ -127,48 +127,90 @@ local ROSTER = {
 local ROSTER_INDEX = {}
 for i, n in ipairs(ROSTER) do ROSTER_INDEX[n] = i end
 
--- ── DYNAMIC ROSTER MERGE (reads sf6_roster.json from sf6_roster_export.lua) ──
--- Globals (not locals) so they don't consume main-chunk local slots and are
--- resolved by name at call time (no forward-reference nil trap). They close
--- over ESF_MAP/ROSTER/ROSTER_INDEX as upvalues, which are declared above.
-_sf6_roster = { last_try = -1e9 }
+-- ── DYNAMIC ROSTER SYNC ──────────────────────────────────────
+-- The three tables above are the STATIC FALLBACK. When the companion script
+-- sf6_roster_export.lua has written reframework/data/sf6_roster.json (from
+-- SF6's live master data), this loader overwrites the tables IN PLACE so a
+-- newly released character is picked up with zero edits to this file.
+--
+-- IMPORTANT (matches this file's known constraints):
+--   * The three `local` tables are declared above and NEVER reassigned here —
+--     we clear+refill the SAME table references. The early-registered input
+--     closure captures those references, so mutating in place keeps it valid.
+--   * ESF_MAP keeps esf###->name (game order). ROSTER is rebuilt ALPHABETICALLY
+--     (the profiles menu displays alphabetically), and ROSTER_INDEX follows it.
+--   * On any failure the static fallback is left untouched.
+-- Single new module-level local (well under the 200-locals limit).
+local function sf6_sync_roster_from_json()
+    local f = io.open("sf6_roster.json", "r")   -- resolves under reframework/data/
+    if not f then return false end
+    local raw = f:read("*a"); f:close()
+    if not raw or raw == "" then return false end
 
-function _sf6_merge_roster()
-    local raw
-    for _, p in ipairs({ "sf6_roster.json", "reframework/data/sf6_roster.json" }) do
-        local f = io.open(p, "r")
-        if f then raw = f:read("*a"); f:close(); break end
-    end
-    if not raw then return false end
-    local ok, parsed = pcall(json.load_string, raw)
-    if not (ok and type(parsed) == "table" and type(parsed.characters) == "table") then
-        return false
-    end
-    for _, c in ipairs(parsed.characters) do
-        if type(c) == "table" and c.esf and c.name then
-            local esf, name = tostring(c.esf), tostring(c.name)
-            ESF_MAP[esf] = name                  -- add or override
-            if not ROSTER_INDEX[name] then        -- new char -> grow roster
-                ROSTER[#ROSTER + 1] = name
-                ROSTER_INDEX[name]  = #ROSTER
+    -- Parse with the json API if present, else a tiny manual extract of the
+    -- {"esf":"...","name":"..."} pairs (avoids a hard json dependency).
+    local entries = {}
+    local ok = false
+    if json and json.load_string then
+        local pok, parsed = pcall(function() return json.load_string(raw) end)
+        if pok and type(parsed) == "table" and type(parsed.characters) == "table" then
+            for _, c in ipairs(parsed.characters) do
+                if type(c) == "table" and c.esf and c.name then
+                    entries[#entries + 1] = { esf = tostring(c.esf), name = tostring(c.name) }
+                end
             end
+            ok = #entries > 0
         end
     end
+    if not ok then
+        -- Manual fallback: pull esf/name pairs in document order.
+        for esf, name in raw:gmatch('"esf"%s*:%s*"(.-)".-"name"%s*:%s*"(.-)"') do
+            entries[#entries + 1] = { esf = esf, name = name }
+        end
+        ok = #entries > 0
+    end
+    if not ok then return false end
+
+    -- Refill ESF_MAP in place.
+    for k in pairs(ESF_MAP) do ESF_MAP[k] = nil end
+    local names = {}
+    for _, e in ipairs(entries) do
+        ESF_MAP[e.esf] = e.name
+        names[#names + 1] = e.name
+    end
+
+    -- Rebuild ROSTER alphabetically (case-insensitive, stable on ties).
+    table.sort(names, function(a, b)
+        local la, lb = a:lower(), b:lower()
+        if la == lb then return a < b end
+        return la < lb
+    end)
+    for i = #ROSTER, 1, -1 do ROSTER[i] = nil end
+    for i, n in ipairs(names) do ROSTER[i] = n end
+
+    -- Rebuild ROSTER_INDEX from the new ROSTER.
+    for k in pairs(ROSTER_INDEX) do ROSTER_INDEX[k] = nil end
+    for i, n in ipairs(ROSTER) do ROSTER_INDEX[n] = i end
+
     return true
 end
 
--- Rate-limited re-read for an unmapped esf seen mid-session (e.g. overlay
--- loaded before the exporter's ~5s-deferred write). Bounded to one small
--- file read per cooldown while an unknown character is on screen.
+-- Run once at load. Safe: top-level file scope, not a d2d callback.
+pcall(sf6_sync_roster_from_json)
+
+-- Rate-limited mid-session re-read: if a detected esf isn't mapped yet (overlay
+-- loaded before the exporter's ~5s-deferred write), re-run the in-place sync at
+-- most once per cooldown. Declared GLOBAL so it adds no module-level local slot
+-- and is resolved by name at call time (no forward-reference nil trap); it
+-- closes over the local sf6_sync_roster_from_json above as an upvalue.
+_sf6_roster_last_try = -1e9
 function _sf6_relookup_esf(esf)
     if ESF_MAP[esf] then return end
     local now = os.clock()
-    if (now - _sf6_roster.last_try) < 3.0 then return end  -- 3s cooldown
-    _sf6_roster.last_try = now
-    pcall(_sf6_merge_roster)
+    if (now - _sf6_roster_last_try) < 3.0 then return end  -- 3s cooldown
+    _sf6_roster_last_try = now
+    pcall(sf6_sync_roster_from_json)
 end
-
-_sf6_merge_roster()   -- initial load-time merge
 
 -- ── DEFAULT CONFIG ───────────────────────────────────────────
 local cfg = {
@@ -288,8 +330,11 @@ local function notation_icon(s)
     if (cfg.notation_mode or "numeric") ~= "icon" then return nil end
     local glyphs = _SF6UI.img.glyph
     if not glyphs then return nil end
-    -- Raw standalone motions use their literal name.
-    if s == "720" or s == "360F" or s == "360B" then return glyphs[s] end
+    -- 360F uses the forward spin; 360B uses the pre-mirrored back-spin.
+    -- 720 has no PNG and falls through below to nil → lettered text.
+    if s == "360F" then return glyphs["360"] end
+    if s == "360B" then return glyphs["360B"] end
+    if s == "720" then return glyphs["720"] end
     -- Only pure inputs (no trailing button) get an icon.
     local motion, btn = s:match("^(.-)([A-Z][A-Z]?)$")
     if btn and btn ~= "" then return nil end
@@ -301,6 +346,83 @@ local function notation_icon(s)
     if not name then return nil end
     return glyphs[name]
 end
+
+-- ── Stacked "all three punches / kicks" glyph ────────────────────
+-- Draws three colored circles (L=blue, M=yellow, H=red) in an overlapping
+-- left-to-right row (red on top), each carrying the fist/foot PNG (or just
+-- the colored circle when the image isn't loaded). Circles are near
+-- full-glyph size so the fists stay legible; the row is centered
+-- vertically on the sz-tall slot (x is its left edge). Returns the total
+-- drawn width so callers keep wrap/caret/measure math correct. Lives on
+-- _SF6UI so every draw closure (ticker, editor preview, palette) can share
+-- it without a main-chunk local. Body uses d2d → only called inside a d2d
+-- draw.
+--
+-- Geometry knobs (all derived from sz): STACK_RAD = circle radius;
+-- STACK_OXF/STACK_OYF = stagger as a fraction of radius. Set OYF > 0 for a
+-- diagonal fan; OYF = 0 keeps it a flat horizontal row. Raise RAD for
+-- bigger circles, OXF for more horizontal spread / less overlap.
+_SF6UI.STACK_COLS = { 0xFF1A82DC, 0xFFDCAA1E, 0xFFC83232 }  -- L, M, H
+do
+    -- Editor-window stacks (button row + build-box preview): roomy fan.
+    local STACK_RAD = 0.27    -- circle radius as a fraction of sz
+    local STACK_OXF = 1.40    -- horizontal stagger as a fraction of radius
+    local STACK_OYF = 0.00    -- vertical stagger (0 = flat horizontal row)
+    -- Ticker stacks keep the original tight overlap; the ticker call sites
+    -- pass these explicitly as rad/oxf overrides.
+    _SF6UI.TICKER_STACK = { rad = 0.46, oxf = 0.90 }
+    _SF6UI.stack_glyph_w = function(sz, n, rad, oxf)
+        n = n or 3
+        rad = rad or STACK_RAD
+        oxf = oxf or STACK_OXF
+        local r  = math.max(4, math.floor(sz * rad))
+        local ox = math.floor(r * oxf)
+        return 2*r + (n-1)*ox + 2
+    end
+    _SF6UI.draw_stack_glyph = function(x, y, sz, is_kick, n, rad, oxf, coff)
+        n = n or 3
+        coff = coff or 0          -- color index offset into STACK_COLS (0=L/M..., 1=M/H...)
+        rad = rad or STACK_RAD
+        oxf = oxf or STACK_OXF
+        local r   = math.max(4, math.floor(sz * rad))
+        local ox  = math.floor(r * oxf)
+        local oy  = math.floor(r * STACK_OYF)
+        local C   = _SF6UI.STACK_COLS
+        local icon = _SF6UI.img and (is_kick and _SF6UI.img.foot or _SF6UI.img.fist) or nil
+        local cy0 = y + math.floor(sz / 2)         -- vertical center of the slot
+        local base_cx = x + r                       -- leftmost circle center
+        local base_cy = cy0 + math.floor((n-1)*oy/2)  -- column centered on cy0
+        for i = 1, n do
+            local cx = base_cx + (i-1) * ox
+            local cy = base_cy - (i-1) * oy
+            d2d.fill_circle(cx + 1, cy + 1, r, 0x66000000)   -- drop shadow
+            d2d.fill_circle(cx, cy, r, C[coff + i] or C[#C])  -- body (L/M/H...)
+            d2d.circle(cx, cy, r, 1, 0xC8000000)             -- ring so they read apart
+            if icon then
+                local isz = math.max(6, math.floor(r * 1.55))
+                d2d.image(icon, cx - isz/2, cy - isz/2, isz, isz)
+            end
+        end
+        return 2*r + (n-1)*ox + 2
+    end
+end
+
+-- Multi-button (stacked-circle) tokens → {n circles, kick?, color offset}.
+-- coff 0 = start at L (blue): PP/KK = L+M (blue+yellow), PPP/KKK = L+M+H.
+-- coff 1 = start at M (yellow): MPHP/MKHK = M+H (yellow+red).
+_SF6UI.STACK_TOKENS = {
+    PP   = { n = 2, kick = false, coff = 0 },
+    KK   = { n = 2, kick = true,  coff = 0 },
+    -- LPMP/LKMK: explicit L+M two-button presses (manual editor buttons).
+    -- Same stacked glyph as PP/KK. PP/KK retained above for combos saved
+    -- before the relabel and for live OD detection (od_suffix = "PP").
+    LPMP = { n = 2, kick = false, coff = 0 },
+    LKMK = { n = 2, kick = true,  coff = 0 },
+    MPHP = { n = 2, kick = false, coff = 1 },
+    MKHK = { n = 2, kick = true,  coff = 1 },
+    PPP  = { n = 3, kick = false, coff = 0 },
+    KKK  = { n = 3, kick = true,  coff = 0 },
+}
 
 local function default_profile(name)
     return {
@@ -1669,6 +1791,28 @@ local function update_current_moves()
         end
     end
 
+    -- ── EDITOR OPEN → CARET TO END ──────────────────────────
+    -- On the window's closed→open edge, snap the caret to the end of the
+    -- current slot's token string so new input appends from the tail
+    -- instead of resuming wherever the caret was last left. Edge-detects
+    -- the visibility flag itself, so it catches every open path (UI button,
+    -- MK chord). Placed ABOVE the `im_found`/stance early-returns so it
+    -- always fires regardless of match state. The flag may be flipped in
+    -- the d2d draw callback; this hook runs every frame, so the snap lands
+    -- on the same or next frame (imperceptible).
+    do
+        local win_now = show_combo_notes_win
+        if win_now and not cn_refresh.win_prev then
+            local cname = ROSTER[edit_char_idx]
+            if cname then
+                local s = get_combo_slot(cname, combo_edit_slot)
+                local t = s and s.tokens
+                combo_edit_cursor = t and #t or 0
+            end
+        end
+        cn_refresh.win_prev = win_now
+    end
+
     if not im_found then return end
 
     -- Update direction buffer
@@ -2071,6 +2215,26 @@ local function update_current_moves()
         if combo_edit_cursor < 0 then combo_edit_cursor = 0 end
     end
 
+    -- ── CHORD WINDOW / RECORDING TOGGLES (MP+LK + third button) ──
+    -- Reuses the MP+LK chord. While it's held, a rising edge on:
+    --   MK → toggle the Combo Notes editor window open / closed
+    --   HK → toggle input recording on / off (window stays open)
+    -- The MK window-toggle must fire even when the editor is CLOSED, so
+    -- it lives here (above the show_combo_notes_win gate) rather than in
+    -- the open-only hotkey block below. Both are edge-detected, so one
+    -- press = one toggle. When the chord is held with the window open,
+    -- the suppression block below swallows these presses, so MK/HK never
+    -- leak into the recorded tokens. (MP is held — not just-pressed — so
+    -- MP+MK does NOT register as the DP compound pair.)
+    if shift_now then
+        if btn_just_pressed(BTN.MK) then
+            show_combo_notes_win = not show_combo_notes_win
+        end
+        if btn_just_pressed(BTN.HK) then
+            cn_refresh.input_enabled = not (cn_refresh.input_enabled ~= false)
+        end
+    end
+
     -- While SHIFT is held in the editor, run hotkey actions on
     -- third-button rising edges and suppress all normal recording
     -- for this frame.
@@ -2097,6 +2261,23 @@ local function update_current_moves()
                     combo_notes_dirty[char_name] = true
                 end
             end
+            -- LEFT / RIGHT rising-edge → move the caret one token. These
+            -- mirror the keyboard arrow keys but on the pad, and use the
+            -- PHYSICAL direction (not facing-mirrored) since this is a UI
+            -- action, not a game motion: Left = caret back, Right = caret
+            -- forward. Single-step per press (matches the other chord
+            -- hotkeys); recording is already suppressed while the chord is
+            -- held, so these never record as direction tokens.
+            if btn_just_pressed(BTN.LEFT) then
+                if combo_edit_cursor > 0 then
+                    combo_edit_cursor = combo_edit_cursor - 1
+                end
+            end
+            if btn_just_pressed(BTN.RIGHT) then
+                if combo_edit_cursor < #toks then
+                    combo_edit_cursor = combo_edit_cursor + 1
+                end
+            end
         end
         -- Suppress normal recording this frame: update prev_btn state
         -- and bail out before the recorder runs.
@@ -2118,7 +2299,7 @@ local function update_current_moves()
     -- LP) all register — the equality check would suppress duplicates
     -- since the numcmd string doesn't change between identical presses.
     if show_combo_notes_win and any_attack_pressed_this_frame
-       and last_numcmd ~= "none" then
+       and last_numcmd ~= "none" and cn_refresh.input_enabled ~= false then
         local char_name = ROSTER[edit_char_idx]
         if char_name then
             local slot = get_combo_slot(char_name, combo_edit_slot)
@@ -2896,6 +3077,17 @@ cn_refresh = {
     kb_impl                = nil,
     kb_label               = "probing...",
     kb_prev                = {},
+    -- Combo-editor input recording toggle (MP+LK + HK). true = attack
+    -- presses record into the active slot; false = practice freely
+    -- without polluting the field. Defaults on; the recorder gate reads
+    -- `~= false` so a missing value fails safe to ON.
+    input_enabled          = true,
+    -- Tracks last-frame editor-window visibility so we can detect the
+    -- closed→open edge and snap the caret to the end of the slot.
+    win_prev               = false,
+    -- Last-frame app.MatchingManager.IsMatching, for the false→true edge
+    -- that auto-closes the editor when an online search begins.
+    matching_prev          = false,
 }
 
 -- Button glyph colors (matching SF6_Combo_Ticker.lua palette)
@@ -3769,8 +3961,9 @@ d2d.register(function()
         -- motion names (mirror MOTION_NAMES values)
         "QCF","QCB","DP","RDP","HCF","HCB","SPD","DD","FF","BB",
         "[B]F","[D]U",
-        -- raw standalone motions (literal)
-        "720","360F","360B",
+        -- 360 = forward spin (used by 360F); 360B = horizontally mirrored
+        -- back-spin (baked PNG, since d2d.image can't flip at draw time).
+        "360","360B",
     }
     for _, gname in ipairs(GLYPH_NAMES) do
         pcall(function()
@@ -4083,17 +4276,26 @@ function()
                                         chunk = { t="chunk", parts={ tok } }
                                     elseif tok.t == "btn" then
                                         -- Button attaches to current chunk (the preceding dir).
-                                        -- Base attacks (LP/MP/HP/LK/MK/HK) entered alone
-                                        -- flush immediately and emit an xx separator so the
-                                        -- next input reads as a new move in the sequence.
-                                        if not chunk and BASE_ATTACKS[tok.v] then
-                                            seq[#seq+1] = { t="chunk", parts={ tok } }
-                                            -- No extra token needed — the renderer auto-inserts
-                                            -- '>' between consecutive chunks.
-                                        else
-                                            if not chunk then
-                                                chunk = { t="chunk", parts={} }
+                                        -- A chunk is ONE move = (optional dir) + one button.
+                                        -- If the open chunk already holds a button, this press
+                                        -- is a new move: flush it so the renderer auto-inserts
+                                        -- '>' before the next chunk. Fixes "(dir)+button then a
+                                        -- bare button piling into the same chunk" — e.g. 2MP
+                                        -- then HP now reads 2MP > HP instead of 2MPHP. (BASE_ATTACKS
+                                        -- is no longer consulted here: a bare attack with no open
+                                        -- chunk simply stands alone, which already auto-separates.)
+                                        local chunk_has_btn = false
+                                        if chunk then
+                                            for _, p in ipairs(chunk.parts) do
+                                                if p.t == "btn" then chunk_has_btn = true; break end
                                             end
+                                        end
+                                        if chunk_has_btn then flush() end
+                                        if not chunk then
+                                            -- No open dir to attach to → stands alone as its own
+                                            -- chunk; the renderer auto-inserts '>' between chunks.
+                                            seq[#seq+1] = { t="chunk", parts={ tok } }
+                                        else
                                             chunk.parts[#chunk.parts+1] = tok
                                         end
                                     end
@@ -4123,7 +4325,10 @@ function()
                                         end
                                     elseif part.t == "btn" then
                                         -- Oki tokens may be wider than standard glyph
-                                        if font_ticker_glyph and part.v:match(":Oki]$") then
+                                        local st = _SF6UI.STACK_TOKENS[part.v]
+                                        if st then
+                                            w = w + _SF6UI.stack_glyph_w(GLYPH_SZ, st.n, _SF6UI.TICKER_STACK.rad, _SF6UI.TICKER_STACK.oxf)
+                                        elseif font_ticker_glyph and part.v:match(":Oki]$") then
                                             local tw, _ = font_ticker_glyph:measure(part.v)
                                             w = w + math.max(GLYPH_SZ, tw + 4)
                                         else
@@ -4138,6 +4343,12 @@ function()
                             -- Draw one button glyph
                             -- Oki: square with larger font. All others: round circle.
                             local function draw_glyph(x, y, label)
+                                -- Stacked multi-button glyph (PP/KK/MPHP/MKHK/PPP/KKK).
+                                local st = _SF6UI.STACK_TOKENS[label]
+                                if st then
+                                    return _SF6UI.draw_stack_glyph(x, y, GLYPH_SZ, st.kick, st.n,
+                                        _SF6UI.TICKER_STACK.rad, _SF6UI.TICKER_STACK.oxf, st.coff)
+                                end
                                 local lookup = label:match(":Oki]$") and "Oki" or label
                                 local col = TC_GLYPH[lookup] or 0xFF787878
                                 local is_oki = lookup == "Oki"
@@ -6543,7 +6754,7 @@ function()
             -- Motion/SA group is 4 columns wide: col0 (66/44/720), colA, colB
             -- (motions), and colC (Super Arts). The block width must span all
             -- four so right-aligning it against the slot list doesn't overlap.
-            local mot_block_w = dir_cell*4 + MOT_GAP*3
+            local mot_block_w = dir_cell*3 + MOT_GAP*2
             -- Motion inputs + Super Arts group sits directly to the RIGHT of
             -- the P/K block (closest to the punch/kick buttons). The aux block
             -- now takes the far-right slot flush against the slots column.
@@ -6746,46 +6957,73 @@ function()
                 end
             end
 
+            -- ── Multi-button row ───────────────────────────────────
+            -- Placed immediately UNDER the numpad's bottom row (and under
+            -- the > button to the right), aligned to the numpad columns.
+            -- PP/KK    = 2-stack L+M (blue+yellow)
+            -- MPHP/MKHK= 2-stack M+H (yellow+red)
+            -- 3P/3K    = 3-stack L+M+H
+            do
+                local mb_y    = content_y + 3*(dir_cell + dir_gap)  -- row 4 = under numpad
+                local mb = {
+                    -- {display/key, kind("P"/"K"), count, token, color-offset}
+                    { "LPMP", "P", 2, "LPMP", 0 },
+                    { "LKMK", "K", 2, "LKMK", 0 },
+                    { "MPHP", "P", 2, "MPHP", 1 },
+                    { "MKHK", "K", 2, "MKHK", 1 },
+                    { "3P",   "P", 3, "PPP",  0 },
+                    { "3K",   "K", 3, "KKK",  0 },
+                }
+                for i, e in ipairs(mb) do
+                    local bx   = dir_x + (i-1)*(dir_cell + dir_gap)
+                    local bcx  = bx + dir_cell/2
+                    local bcy  = mb_y + dir_cell/2
+                    local r    = math.floor((math.floor(dir_cell/2) - 1) * 1.10)
+                    local hov  = hit_rect(bx, mb_y, dir_cell, dir_cell)
+                    local mhva = hover_amt("mb" .. e[1], hov)
+                    _SF6UI.UI.arcade_button(bcx, bcy, r, _SF6UI.cncol.CN_DIR_BG, mhva)
+                    local ssz  = math.floor(r * 1.7)
+                    local sw   = _SF6UI.stack_glyph_w(ssz, e[3])
+                    _SF6UI.draw_stack_glyph(bcx - sw/2, bcy - ssz/2, ssz, e[2] == "K", e[3], nil, nil, e[5])
+                    if cn_click(bx, mb_y, dir_cell, dir_cell) then
+                        insert_at_cursor({t="btn", v=e[4]})
+                    end
+                end
+            end
+
             -- ── Motion buttons: 3 cols x 5 rows, right of numpad ──
-            -- col 0 (left): empty except row 5 → 720
-            -- col A (mid):  236  623  41236  [4]6  360F
-            -- col B (right): 214  x2   63214  [2]8  360B
+            -- col 0 (left): 236  41236  [4]6  [2]8  720
+            -- col A (mid):  214  623    63214 360F  360B
+            -- col B (right, SA): SA1 SA2 SA2-2 SA3 SA3-2
             -- 360F/360B/720 skip the notation toggle (raw=true).
+            -- (x2 lives in the aux block now.)
             do
                 local col0_x  = mot_x
                 local colA_x  = col0_x + dir_cell + MOT_GAP
-                local colB_x  = colA_x + dir_cell + MOT_GAP
                 -- SA column sits just right of the last motion column.
-                local colC_x  = colB_x + dir_cell + MOT_GAP
-                -- col 0: 720 (standalone double-spin motion)
-                -- col A/B: standard motion inputs (dir tokens)
-                -- col C: SA buttons (btn tokens, gold tint)
+                local colB_x  = colA_x + dir_cell + MOT_GAP
+                -- col 0 / col A: standard motion inputs (dir tokens)
+                -- col B: SA buttons (btn tokens, gold tint)
                 -- { col_x, row, display_label, token_val, raw?, is_sa? }
                 local motion_cols = {
-                    -- col0: PP/KK (OD) on top, then dashes + 720.
-                    -- fields: {x, row, display, token, raw?, is_sa?, fill?, is_btn?}
-                    { col0_x, 1, "PP",  "PP",  true, false, CN_BTN_COLORS["PP"], true },
-                    { col0_x, 2, "KK",  "KK",  true, false, CN_BTN_COLORS["KK"], true },
-                    { col0_x, 3, "66",    "66"          },
-                    { col0_x, 4, "44",    "44"          },
+                    -- col0: 236 / 41236 / [4]6 / [2]8 / 720
+                    { col0_x, 1, "236",   "236"         },
+                    { col0_x, 2, "41236", "41236"       },
+                    { col0_x, 3, "[4]6",  "[4]6"        },
+                    { col0_x, 4, "[2]8",  "[2]8"        },
                     { col0_x, 5, "720",   "720",  true  },
-                    -- colA         colB
-                    { colA_x, 1, "236",   "236"         },
-                    { colB_x, 1, "214",   "214"         },
+                    -- colA: 214 / 623 / 63214 / 360F / 360B
+                    { colA_x, 1, "214",   "214"         },
                     { colA_x, 2, "623",   "623"         },
-                    { colB_x, 2, "x2",    "x2"          },
-                    { colA_x, 3, "41236", "41236"       },
-                    { colB_x, 3, "63214", "63214"       },
-                    { colA_x, 4, "[4]6",  "[4]6"        },
-                    { colB_x, 4, "[2]8",  "[2]8"        },
-                    { colA_x, 5, "360F",  "360F", true  },
-                    { colB_x, 5, "360B",  "360B", true  },
-                    -- colC: Super Arts
-                    { colC_x, 1, "SA1",   "SA1",  true, true },
-                    { colC_x, 2, "SA2",   "SA2",  true, true },
-                    { colC_x, 3, "SA2-2", "SA2-2",true, true },
-                    { colC_x, 4, "SA3",   "SA3",  true, true },
-                    { colC_x, 5, "SA3-2", "SA3-2",true, true },
+                    { colA_x, 3, "63214", "63214"       },
+                    { colA_x, 4, "360F",  "360F", true  },
+                    { colA_x, 5, "360B",  "360B", true  },
+                    -- colB: Super Arts
+                    { colB_x, 1, "SA1",   "SA1",  true, true },
+                    { colB_x, 2, "SA2",   "SA2",  true, true },
+                    { colB_x, 3, "SA2-2", "SA2-2",true, true },
+                    { colB_x, 4, "SA3",   "SA3",  true, true },
+                    { colB_x, 5, "SA3-2", "SA3-2",true, true },
                 }
                 for _, me in ipairs(motion_cols) do
                     local bx   = me[1]
@@ -6813,8 +7051,14 @@ function()
                     -- Icon mode: motion inputs draw their PNG glyph. SA/x2
                     -- buttons aren't motions, so notation_icon returns nil
                     -- for them and they fall back to text correctly.
+                    local is_stack = me[9]   -- "P"/"K" → stacked all-three glyph
                     local micon = (not is_sa and not is_x2 and not is_btn) and notation_icon(me[3]) or nil
-                    if micon then
+                    if is_stack then
+                        local cnt = me[10] or 3
+                        local ssz = math.floor(r * 1.7)
+                        local sw  = _SF6UI.stack_glyph_w(ssz, cnt)
+                        _SF6UI.draw_stack_glyph(bcx - sw/2, bcy - ssz/2, ssz, is_stack == "K", cnt)
+                    elseif micon then
                         local isz = math.floor(r * 1.6)
                         d2d.image(micon, bcx - isz/2, bcy - isz/2, isz, isz)
                     else
@@ -6872,15 +7116,13 @@ function()
                 atk_btn(3, 2, "HK")
             end
             -- ── AUX MECHANICS BLOCK (columns right of the P/K buttons) ──
-            -- Layout: a short front column of 2 (bottom-aligned) + two full
-            -- columns of 5. The P/K block is now 3 columns wide, so the aux
-            -- block is anchored just to its right.
-            --   front(2)   colB(5)   colC(5)
-            --              DRC       Oki
-            --              DI        F.Kill
-            --              DP        CH
-            --   xx         DRv       PC
-            --   DR         MW        SHM
+            -- Three full columns of 5, anchored just right of the motion group.
+            --   colA(5)   colB(5)   colC(5)
+            --   DR        DRC       Oki
+            --   FF        DI        F.Kill
+            --   BB        DP        CH
+            --   xx        DRv       PC
+            --   x2        MW        SHM
             local AUX_GAP   = sc(14)
             local aux_cell  = atk_cell_h            -- square cells
             local aux_pitch = aux_cell + atk_gap
@@ -6912,11 +7154,18 @@ function()
                 if opts.stroke then
                     d2d.circle(cx, cy, r - sc(1), sc(opts.stroke_w or 3), opts.stroke)
                 end
-                local disp = opts.display or label
-                local f_lbl = fit_legend_font(disp, r*2 - sc(8), aux_fs_base)
-                local tw, th = f_lbl:measure(disp)
-                d2d_stroked_text(f_lbl, disp, cx - tw/2, cy - th/2,
-                    opts.text_col or _SF6UI.cncol.CN_BTN_TEXT, sc(1))
+                if opts.stack then
+                    -- Stacked all-3-punches / all-3-kicks icon centered on the dome.
+                    local ssz = math.floor(r * 1.7)
+                    local sw  = _SF6UI.stack_glyph_w(ssz)
+                    _SF6UI.draw_stack_glyph(cx - sw/2, cy - ssz/2, ssz, opts.is_kick)
+                else
+                    local disp = opts.display or label
+                    local f_lbl = fit_legend_font(disp, r*2 - sc(8), aux_fs_base)
+                    local tw, th = f_lbl:measure(disp)
+                    d2d_stroked_text(f_lbl, disp, cx - tw/2, cy - th/2,
+                        opts.text_col or _SF6UI.cncol.CN_BTN_TEXT, sc(1))
+                end
                 if cn_click(cx-r, cy-r, r*2, r*2) then
                     insert_at_cursor({t = opts.tok_type or "btn",
                                       v = opts.token or label})
@@ -6929,10 +7178,17 @@ function()
                            or  aux_ctr < 0 and (tostring(aux_ctr))
                            or  "0"
 
-            -- Front-short column (acol 1): xx, DR — bottom-aligned (rows 4-5).
+            -- Front column (acol 1): DR (top) / FF / BB / xx / x2. FF/BB and
+            -- x2 emit dir tokens (66/44/x2); DR keeps its blue stroke ring.
+            aux_btn(1, 1, "DR", { stroke = 0xFF40B8FF, stroke_w = 4 })
+            aux_btn(1, 2, "FF", { token = "66", tok_type = "dir",
+                                  fill = _SF6UI.cncol.CN_DIR_BG })
+            aux_btn(1, 3, "BB", { token = "44", tok_type = "dir",
+                                  fill = _SF6UI.cncol.CN_DIR_BG })
             aux_btn(1, 4, "xx", { fill = 0xFF252530,
                                   text_col = _SF6UI.cncol.CN_CANCEL_COL })
-            aux_btn(1, 5, "DR", { stroke = 0xFF40B8FF, stroke_w = 4 })
+            aux_btn(1, 5, "x2", { token = "x2", tok_type = "dir",
+                                  fill = 0xFF3A2048, text_col = 0xFFCC88FF })
             -- Column B (acol 2): DRC, DI, DP, DRv, MW.
             aux_btn(2, 1, "DRC")
             aux_btn(2, 2, "DI",  { stroke = 0xFFFFE000 })
@@ -7193,6 +7449,22 @@ function()
                 list_x + (slot_list_w - hl) / 2,
                 hint_y,
                 act_count >= COMBO_MAX_ACTIVE and C_BAD or C_DIM)
+
+            -- Input-recording status badge (toggled by the MP+LK+HK chord).
+            -- Green = recording attack presses into the active slot; amber
+            -- = paused, so the player can drill the real combo without it
+            -- polluting the field. Centered under the active-count hint;
+            -- reuses font_slot + the same column-centering math.
+            do
+                local rec_on  = cn_refresh.input_enabled ~= false
+                local rec_txt = rec_on and "REC on  (MP+LK+HK)"
+                                       or  "REC paused  (MP+LK+HK)"
+                local rw, rh  = font_slot:measure(rec_txt)
+                d2d.text(font_slot, rec_txt,
+                    list_x + (slot_list_w - rw) / 2,
+                    hint_y + rh + sc(3),
+                    rec_on and 0xFF22C55E or 0xFFE0A020)
+            end
 
             -- ── Shared "chip" button style for the bottom-bar controls ──
             -- A rounded rectangular button that echoes the arcade-button look
@@ -7598,6 +7870,7 @@ function()
                           or (PV_KICK[tok.v]  and _SF6UI.img.foot))
                         or nil
                     local tok_dir_icon = (tok.t == "dir") and notation_icon(tok.v) or nil
+                    local tok_stack = (tok.t == "btn") and _SF6UI.STACK_TOKENS[tok.v] or nil
                     local tok_icon = tok_btn_icon or tok_dir_icon
                     local icon_sz = math.floor(preview_fs * 1.1)
 
@@ -7610,7 +7883,9 @@ function()
 
                     -- Token width: icon slot for icon tokens, else text.
                     local tw2
-                    if tok_icon then
+                    if tok_stack then
+                        tw2 = _SF6UI.stack_glyph_w(icon_sz, tok_stack.n)
+                    elseif tok_icon then
                         tw2 = icon_sz
                     else
                         tw2 = font_preview:measure(tlabel)
@@ -7642,7 +7917,12 @@ function()
                         d2d.fill_rect(tok_x, tok_y, tok_w, tok_h, 0x22FFFFFF)
                     end
 
-                    if tok_btn_icon then
+                    if tok_stack then
+                        -- Stacked multi-button glyph (count + color offset).
+                        _SF6UI.draw_stack_glyph(px2,
+                            py2 + (preview_lh - icon_sz)/2, icon_sz,
+                            tok_stack.kick, tok_stack.n, nil, nil, tok_stack.coff)
+                    elseif tok_btn_icon then
                         -- Colored circle behind the fist/foot conveys the
                         -- button strength (L=blue, M=yellow, H=red), matching
                         -- the editor buttons and ticker.
@@ -8013,6 +8293,33 @@ end)
 local update_timer = 0
 re.on_frame(function()
     pcall(function()
+        -- ── AUTO-CLOSE EDITOR WHEN MATCHMAKING STARTS ──────────────
+        -- app.MatchingManager.IsMatching goes true the instant you queue
+        -- for an online match and stays true through the search and the
+        -- connection handshake. REFramework cuts Lua during that handshake
+        -- (StartFG_ConnectHost/Guest phase), freezing the last rendered
+        -- frame on screen — so an open combo editor gets stuck there for
+        -- the whole match. IsMatching flips at QUEUE time, many seconds
+        -- (often longer) before the handshake, so closing on its false→true
+        -- edge guarantees the editor is gone well before the freeze, with
+        -- no race. Edge-triggered (close once), so you can still reopen it
+        -- manually mid-search if you want — though if a match lands while
+        -- it's open, the freeze can return. Pure getter, pcall-guarded.
+        -- IsMatching is only ever true for online matchmaking, so it never
+        -- fires during normal offline training.
+        do
+            local mm = sdk.get_managed_singleton("app.MatchingManager")
+            local matching = false
+            if mm then
+                local ok, v = pcall(function() return mm:call("get_IsMatching") end)
+                matching = ok and v == true
+            end
+            if matching and not cn_refresh.matching_prev then
+                show_combo_notes_win = false
+            end
+            cn_refresh.matching_prev = matching
+        end
+
         -- Pump mouse position every frame so hit-tests work even when
         -- the REFramework menu is closed (imgui.get_mouse inside d2d draw
         -- may return stale coords when the REF menu is not open).
