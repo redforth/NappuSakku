@@ -363,8 +363,10 @@ def pad_combonotes(data: dict) -> dict:
 
 def default_notes() -> dict:
     return {
-        "notes": "",       # in-game profile card text
-        "links": [],       # [{label, url}]
+        "notes": "",            # in-game profile card text
+        "links": [],            # [{label, url}]
+        "favorites": [],        # [{label, url, ...}] auto-persisted from Video tab
+        "control_scheme": "classic",
     }
 
 
@@ -372,6 +374,8 @@ def default_notes() -> dict:
 class NotesIn(BaseModel):
     notes: str
     links: list[dict]
+    favorites: list[dict] = []
+    control_scheme: str = "classic"
 
 
 class CombosIn(BaseModel):
