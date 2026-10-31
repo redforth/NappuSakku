@@ -1,12 +1,20 @@
 # NappuSakku — SF6 Overlay
 
-An enhanced UI and integrated web app for combo notation in Street Fighter 6.
-
-Real-time training and match overlay for Street Fighter 6.
+An enhanced UI and integrated web app for combo notation in Street Fighter 6, with a real-time training and match overlay.
 
 ---
 
-## What's New in This Release
+## Changelog
+
+### v2.27
+
+- **Security:** the editor's local server now rejects requests from other websites and won't serve files outside its own folder.
+- **Security:** the editor only accepts a folder named `sf6_framedata`, and backup import only restores known character files.
+- **Security:** note links only open `http://` and `https://` addresses.
+- **Fix:** a failed save in the editor now shows an error instead of "saved".
+- **Docs:** file names and paths in this README now match what the installer actually writes.
+
+### Previous release
 
 - **Automatic roster updates.** New characters are added to both the overlay and the web app automatically as Capcom releases them — no code update required from me. (See [Automatic Roster Updates](#automatic-roster-updates) for how it works.)
 - **Reorganized icon layout.** Icons in both the web app and the in-game overlay have been rearranged to flow better and read more clearly.
@@ -38,7 +46,7 @@ The SF6 Overlay is a REFramework-based mod that adds a real-time training overla
 - **Character profile text** under each fighter's name for personal play notes.
 - **Health-bar tick marks** at 10% intervals so you can see exact damage thresholds and CA timing.
 - **Modern control scheme supported.**
-- **SF6_Roster_Export.lua.** reads the current roster and saves it to a json file in 'Street Fighter 6\reframework\data'
+- **Roster export script** (`sf6_roster_export.lua`) that saves the current roster to `<SF6>\reframework\data\sf6_roster.json`.
 - ...and more.
 
 ---
@@ -49,7 +57,7 @@ As of this release, new characters are picked up automatically — you don't nee
 
 Here's the flow:
 
-1. On game launch, a roster.lua the overlay script reads the current roster and writes it to a JSON file in `<SF6>\reframework\data\`.
+1. On game launch, `sf6_roster_export.lua` reads the current roster and writes it to `<SF6>\reframework\data\sf6_roster.json`.
 2. `server.py` and `index.html` read that roster on startup and adjust the Combo Editor and the web app's character page for any new characters.
 3. **Launch order matters:** start the game first, then start the web app, so the roster file is written before the web app reads it.
 4. Saving a combo in either the web app or the in-game editor creates the character's folder under `<SF6>\reframework\data\sf6_framedata\`.
@@ -98,11 +106,11 @@ Downloads the latest `reframework-d2d` release from cursey's GitHub. Extracts th
 
 ### 5. Overlay script copy
 
-Copies the overlay into `<SF6>\reframework\autorun\SF6_Overlay.lua`. This is the actual mod file.
+Copies the overlay into `<SF6>\reframework\autorun\SF6_Overlay.lua`. This is the actual mod file. The overlay's input icons are copied to `<SF6>\reframework\images\`.
 
 ### 6. Roster script copy
 
-Copies SF6_export_Roster.lua to `<SF6>\reframework\autorun\SF6_Roster_Export.lua` This file exports the current roster to a .json 5 seconds after the game has launched.
+Copies `sf6_roster_export.lua` to `<SF6>\reframework\autorun\sf6_roster_export.lua`. It exports the current roster to a JSON file 5 seconds after the game launches. (This and the icon copy run as part of the installer's step 3.)
 
 ### 7. Frame data download
 
@@ -110,16 +118,17 @@ Runs the frame data updater to pull the current frame data from FAT (Frame Assis
 
 ### 8. Desktop shortcut (opt-in)
 
-At the end, you're asked whether to create a desktop shortcut for the SF6 Overlay Editor. The shortcut points at `editor\run_editor.bat` inside your unzipped folder, and launches without a visible console window.
+At the end, you're asked whether to create a desktop shortcut for the SF6 Overlay Editor. The shortcut points at `editor\run_editor.bat` inside your unzipped folder, and launches with its console window minimized.
 
 > **TECH NOTE:** What gets written to your SF6 folder:
 > - `<SF6>\dinput8.dll` (REFramework)
 > - `<SF6>\reframework\plugins\reframework-d2d.dll` (d2d plugin)
 > - `<SF6>\reframework\autorun\SF6_Overlay.lua` (the overlay)
-> - `<SF6>\reframework\autorun\SF6_Roster_Export.lua` (script for exporting the latest roster)
+> - `<SF6>\reframework\autorun\sf6_roster_export.lua` (script for exporting the latest roster)
 > - `<SF6>\reframework\data\sf6_roster.json` (JSON file the roster gets written to 5 seconds after the game has launched)
 > - `<SF6>\reframework\data\sf6_framedata\<CharacterName>\framedata.json` (frame data, one folder per character)
-> - `<SF6>\reframework\images` (Folder containing PNGs for the in-game overlay)
+> - `<SF6>\reframework\images\` (PNGs for the in-game overlay)
+>
 > The installer does **not** touch game files, save data, or anything outside the `reframework\` subfolder.
 
 ---
@@ -175,15 +184,15 @@ Double-click the **SF6 Overlay Editor** shortcut on your desktop (created during
 
 - On **first launch**, `run_editor.bat` checks for a bundled Python at `editor\python\python.exe`. If present (the default), it launches the editor immediately. If absent (slim package), it falls back to system Python and auto-creates an isolated virtual environment with the required packages.
 - Your browser opens automatically to `http://localhost:8765`. If it doesn't, open that URL manually.
-- On **very first launch**, the editor asks where your frame-data folder lives. The correct default is:
+- On **first launch**, the editor finds your frame-data folder through Steam automatically. If it can't, click **FOLDER** (top right) and enter:
 
   ```
   <your SF6 folder>\reframework\data\sf6_framedata
   ```
 
-  This is the folder `install.bat` created. The editor saves this path to `editor\source\settings.json`, so you only set it once.
+  This is the folder `install.bat` created. The editor only accepts a folder named `sf6_framedata`, and saves the path to `editor\source\settings.json`, so you only set it once.
 
-> **TECH NOTE:** The editor runs a local FastAPI server on port 8765. It only listens on `localhost` — nothing is exposed to the internet. Closing the `run_editor` console window stops the server. If port 8765 is already in use, edit the port number near the bottom of `editor\source\server.py`.
+> **TECH NOTE:** The editor runs a local FastAPI server on port 8765. It only listens on `localhost` — nothing is exposed to the internet. Closing the `run_editor` console window stops the server. If port 8765 is already in use, change `PORT = 8765` in `editor\source\server.py`.
 
 ---
 
@@ -231,10 +240,14 @@ If you change your mind, press `N` at the prompt to cancel safely — nothing is
 
 To completely remove the overlay:
 
-1. Delete `<SF6>\reframework\autorun\SF6_Overlay.lua`.
-2. Delete the entire folder `<SF6>\reframework\data\sf6_framedata\`.
-3. Delete your unzipped `NappuSakku-main` folder.
-4. Delete the desktop shortcut, if you created one.
+The easiest way is `Uninstall-NappuSakku.zip`: unzip it and run `Uninstall-NappuSakku.bat`. To do it by hand:
+
+1. Delete `<SF6>\reframework\autorun\SF6_Overlay.lua` and `<SF6>\reframework\autorun\sf6_roster_export.lua`.
+2. Delete the entire folder `<SF6>\reframework\data\sf6_framedata\` (this also deletes your combos and notes).
+3. Delete `<SF6>\reframework\data\sf6_roster.json`, `<SF6>\reframework\data\sf6_fd_debug.txt`, and the overlay settings file `<SF6>\reframework\data\reframework\data\sf6_overlay_config.json`.
+4. Delete the overlay's PNGs from `<SF6>\reframework\images\` (or the whole folder if no other mod uses it).
+5. Delete your unzipped `NappuSakku-main` folder.
+6. Delete the desktop shortcut, if you created one.
 
 REFramework itself and the d2d plugin are untouched and remain usable for other RE Engine games. To also remove those:
 
@@ -286,11 +299,11 @@ The bundled Python at `editor\python\` may be missing. Either:
 
 ### Editor can't save to the folder
 
-Check that the folder option at the top of the screen is set to `Street Fighter 6\reframework\data\sf6_framedata`.
+Click **FOLDER** (top right) and check it's set to `<SF6>\reframework\data\sf6_framedata`. The editor rejects any other folder.
 
 ### Port 8765 is already in use
 
-Some other application is using that port. The easiest fix is to stop the other application. Otherwise, edit `editor\source\server.py`, find the `8765` value near the bottom of the file, and change it to a different port (e.g. `8766`).
+Some other application is using that port. The easiest fix is to stop the other application. Otherwise, edit `editor\source\server.py` and change `PORT = 8765` to a different port (e.g. `8766`).
 
 ### Frame data updater fails to download
 
@@ -305,7 +318,7 @@ You moved or deleted the unzipped `NappuSakku-main` folder after creating the sh
 
 ### Antivirus flags w32.exe inside the editor's Python folder
 
-This is a false positive on a legitimate file shipped with pip (a Windows launcher stub used when pip installs console-script packages). If your AV quarantines it, the editor still works because the overlay doesn't use pip at runtime. To silence the warning permanently, the slim version of the package strips pip out entirely — use `build_embedded.bat` to recreate the Python folder cleanly.
+This is a false positive on a legitimate file shipped with pip (a Windows launcher stub used when pip installs console-script packages). If your AV quarantines it, the editor still works because it doesn't use pip at runtime. You can also delete the file yourself.
 
 ---
 

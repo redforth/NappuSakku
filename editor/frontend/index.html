@@ -1499,6 +1499,25 @@ import { createRoot } from 'https://esm.sh/react-dom@18.3.1/client';
 
 // ── API ────────────────────────────────────────────────────
 // Same endpoints as the original — server contract unchanged.
+// Only http(s) links are rendered as clickable. Link URLs come from
+// notes.json (or an imported backup), so a `javascript:` URL there
+// would otherwise run script in the editor when clicked.
+const isWebUrl = (url) => {
+  try { return ['http:', 'https:'].includes(new URL(url).protocol); }
+  catch { return false; }
+};
+
+// Parse a JSON response, throwing on HTTP errors so callers' catch
+// blocks fire instead of treating a 4xx/5xx body as a successful save.
+const jsonOrThrow = async (r) => {
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const d = data.detail;
+    throw new Error(typeof d === 'string' ? d : (d ? JSON.stringify(d) : `HTTP ${r.status}`));
+  }
+  return data;
+};
+
 const API = {
   health: () => fetch('/api/health').then(r => r.json()),
   roster: () => fetch('/api/roster').then(r => r.json()),
@@ -1513,11 +1532,11 @@ const API = {
   saveNotes: (name, body) => fetch(`/api/character/${encodeURIComponent(name)}/notes`, {
     method: 'PUT', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
-  }).then(r => r.json()),
+  }).then(jsonOrThrow),
   saveCombos: (name, body) => fetch(`/api/character/${encodeURIComponent(name)}/combos`, {
     method: 'PUT', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
-  }).then(r => r.json()),
+  }).then(jsonOrThrow),
   // Modern combos write to moderncombonotes.json — same payload shape
   // as saveCombos, different endpoint. Each character keeps Classic
   // and Modern combo sets independently so flipping the per-character
@@ -1525,11 +1544,11 @@ const API = {
   saveCombosModern: (name, body) => fetch(`/api/character/${encodeURIComponent(name)}/combos_modern`, {
     method: 'PUT', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(body),
-  }).then(r => r.json()),
+  }).then(jsonOrThrow),
   setFolder: (path) => fetch('/api/settings/folder', {
     method: 'PUT', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ path }),
-  }).then(r => r.json()),
+  }).then(jsonOrThrow),
   // Save the per-profile hotkey configuration. Server writes to
   // <reframework data folder>/sf6_hotkeys.json. Body shape:
   //   { version: 2, active: <profile name>, profiles: {...} }
@@ -8499,7 +8518,7 @@ function LinksTab({ name, links, setLinks, onSave, dirty, markDirty }) {
               React.createElement('span', { className: 'cp-bk-bl' }),
               React.createElement('span', { className: 'cp-bk-br' }),
             ),
-            lnk.url && React.createElement('a', {
+            isWebUrl(lnk.url) && React.createElement('a', {
               href: lnk.url, target: '_blank', rel: 'noreferrer',
               className: 'cp-btn-link',
               style: { fontSize: '10px', padding: '8px 12px' },

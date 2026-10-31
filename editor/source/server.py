@@ -33,8 +33,7 @@ try:
 except ImportError:
     winreg = None  # type: ignore[assignment]
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -184,7 +183,7 @@ def get_framedata_path() -> Path:
     """
     s = load_settings()
     saved = s.get("framedata_path")
-    if saved and Path(saved).exists():
+    if saved and is_valid_framedata_dir(Path(saved)):
         return Path(saved)
     # Saved path is missing or no longer exists on this machine (e.g. the
     # exe was copied here from another box and settings.json hitched along,
@@ -219,6 +218,36 @@ ROSTER_FALLBACK = [
     "Marisa", "Guile", "Ed", "E.Honda", "Jamie", "Akuma", "Sagat", "M.Bison",
     "Terry", "Mai", "Elena", "C.Viper", "Alex",
 ]
+
+# Per-character files the editor is allowed to write (and restore).
+USER_DATA_FILES = ("combonotes.json", "moderncombonotes.json", "notes.json")
+
+FRAMEDATA_DIR_NAME = "sf6_framedata"
+
+
+def is_valid_framedata_dir(p: Path) -> bool:
+    """The data folder must be an existing directory named sf6_framedata.
+
+    Everything the editor writes lands in (or one level above) this
+    folder, so accepting an arbitrary path would let a bad settings
+    value or request aim writes at e.g. the Windows Startup folder.
+    """
+    return p.is_dir() and p.name.lower() == FRAMEDATA_DIR_NAME
+
+
+def _contained(base: Path, rel: str) -> Path | None:
+    """Resolve base/rel, or None if the result escapes base.
+
+    Guards the static-file handlers: pathlib discards `base` when `rel`
+    is absolute (e.g. "C:/Users/..."), and encoded "../" survives
+    routing, so a plain join would serve any file on disk.
+    """
+    root = base.resolve()
+    try:
+        p = (root / rel).resolve()
+    except (OSError, ValueError):
+        return None
+    return p if p.is_relative_to(root) else None
 
 
 def _roster_path() -> Path:
@@ -413,15 +442,30 @@ class HotkeysIn(BaseModel):
 # ── App ───────────────────────────────────────────────────────
 app = FastAPI(title="SF6 Overlay Editor")
 
-# CORS open since we only ever bind to 127.0.0.1 — but allow any
-# origin so the user could theoretically open the HTML directly
-# from disk and still talk to the server.
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+PORT = 8765
+ALLOWED_HOSTS = {f"localhost:{PORT}", f"127.0.0.1:{PORT}"}
+ALLOWED_ORIGINS = {f"http://{h}" for h in ALLOWED_HOSTS}
+
+
+# Binding to 127.0.0.1 is not enough on its own: any web page open in
+# the user's browser can still send requests here. No CORS headers are
+# sent (the frontend is same-origin), and this middleware rejects:
+#   - a Host other than localhost/127.0.0.1 (DNS-rebinding attacks)
+#   - state-changing requests from another origin (CSRF — e.g. a page
+#     auto-submitting a form to /api/backup/import)
+@app.middleware("http")
+async def local_only(request: Request, call_next):
+    if request.headers.get("host", "").lower() not in ALLOWED_HOSTS:
+        return JSONResponse({"error": "forbidden host"}, status_code=403)
+    if request.method not in ("GET", "HEAD"):
+        origin = request.headers.get("origin")
+        if origin is not None and origin.lower() not in ALLOWED_ORIGINS:
+            return JSONResponse({"error": "forbidden origin"}, status_code=403)
+        if request.headers.get("sec-fetch-site", "same-origin") not in (
+            "same-origin", "none"
+        ):
+            return JSONResponse({"error": "forbidden origin"}, status_code=403)
+    return await call_next(request)
 
 
 @app.get("/api/health")
@@ -442,8 +486,14 @@ def get_settings_api():
 @app.put("/api/settings/folder")
 def set_folder(body: FolderIn):
     p = Path(body.path)
-    if not p.exists():
+    if not p.is_dir():
         raise HTTPException(400, f"Folder does not exist: {p}")
+    if not is_valid_framedata_dir(p):
+        raise HTTPException(
+            400,
+            f"Pick the '{FRAMEDATA_DIR_NAME}' folder "
+            f"(<SF6>\\reframework\\data\\{FRAMEDATA_DIR_NAME}), not: {p}",
+        )
     s = load_settings()
     s["framedata_path"] = str(p)
     save_settings(s)
@@ -668,7 +718,7 @@ def _collect_backup_files() -> list[tuple[str, Path]]:
     # Per-character user data — combos (both schemes) + notes.
     for name in ROSTER:
         folder = base / name
-        for fname in ("combonotes.json", "moderncombonotes.json", "notes.json"):
+        for fname in USER_DATA_FILES:
             src = folder / fname
             if src.exists():
                 out.append((f"characters/{name}/{fname}", src))
@@ -687,7 +737,9 @@ def _arcname_to_dest(arcname: str) -> Path:
         return SETTINGS_PATH
     if arcname.startswith("characters/"):
         parts = arcname.split("/")
-        if len(parts) == 3:
+        # Only known characters and known files — never an arbitrary
+        # subfolder/filename under the data folder.
+        if len(parts) == 3 and parts[1] in ROSTER and parts[2] in USER_DATA_FILES:
             return base / parts[1] / parts[2]
     raise ValueError(f"unknown arcname: {arcname}")
 
@@ -836,6 +888,12 @@ async def import_backup(
                     errors.append({"file": arcname, "error": "unsafe path"})
                     continue
 
+                try:
+                    _arcname_to_dest(arcname)
+                except ValueError:
+                    errors.append({"file": arcname, "error": "not a recognised backup file"})
+                    continue
+
                 # Server-settings opt-in gate
                 if arcname == "server_settings.json" and not do_settings:
                     skipped.append(arcname)
@@ -845,10 +903,20 @@ async def import_backup(
                 try:
                     # Tolerate BOM in older backups
                     text = data.decode("utf-8-sig")
-                    json.loads(text)
+                    parsed = json.loads(text)
                 except Exception as e:
                     errors.append({"file": arcname, "error": f"invalid JSON: {e}"})
                     continue
+
+                # A restored settings file must still point at a real
+                # sf6_framedata folder, same rule as the folder picker.
+                if arcname == "server_settings.json":
+                    fp = parsed.get("framedata_path") if isinstance(parsed, dict) else None
+                    if fp is not None and not (isinstance(fp, str)
+                                               and is_valid_framedata_dir(Path(fp))):
+                        errors.append({"file": arcname,
+                                       "error": "framedata_path is not an sf6_framedata folder"})
+                        continue
 
                 stage_path = staging / arcname
                 stage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -935,10 +1003,8 @@ def fallback(path: str):
     """
     if path.startswith("portraits/"):
         rel = path[len("portraits/"):]
-        # Strip query strings like ?_=123456 used for cache-busting
-        rel = rel.split("?", 1)[0]
-        p = portraits_dir() / rel
-        if p.exists() and p.is_file():
+        p = _contained(portraits_dir(), rel)
+        if p is not None and p.is_file():
             ext = p.suffix.lower()
             media_type = MEDIA_MIME.get(ext)
             # Nuclear no-cache: no-store tells the browser to never
@@ -959,8 +1025,8 @@ def fallback(path: str):
             )
         return JSONResponse({"error": "portrait not found"}, status_code=404)
 
-    p = bundled_dir() / path
-    if p.exists() and p.is_file():
+    p = _contained(bundled_dir(), path)
+    if p is not None and p.is_file():
         ext = p.suffix.lower()
         if ext in MEDIA_MIME:
             return FileResponse(p, media_type=MEDIA_MIME[ext])
@@ -973,7 +1039,7 @@ def open_browser_delayed():
     """Wait a moment for the server to come up, then open the editor."""
     time.sleep(1.2)
     try:
-        webbrowser.open("http://localhost:8765/")
+        webbrowser.open(f"http://localhost:{PORT}/")
     except Exception:
         pass
 
@@ -983,11 +1049,11 @@ def main():
     print("SF6 Overlay Editor")
     print(f"Settings file: {SETTINGS_PATH}")
     print(f"Frame data folder: {get_framedata_path()}")
-    print(f"Open in browser: http://localhost:8765/")
+    print(f"Open in browser: http://localhost:{PORT}/")
     print("Press Ctrl+C to stop the server.")
     print("=" * 60)
     threading.Thread(target=open_browser_delayed, daemon=True).start()
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")
+    uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
 
 
 if __name__ == "__main__":
